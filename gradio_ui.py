@@ -1,6 +1,6 @@
 import gradio as gr
-from .env.environment import CodeReviewEnv
-from .env.models import Action
+from env.environment import CodeReviewEnv
+from env.models import Action
 import json
 
 # Global environment instance for the UI session

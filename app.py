@@ -4,9 +4,9 @@ from typing import Optional, Dict
 import uuid
 import gradio as gr
 
-from .env.environment import CodeReviewEnv
-from .env.models import Action, Observation
-from .gradio_ui import demo
+from env.environment import CodeReviewEnv
+from env.models import Action, Observation
+from gradio_ui import demo
 
 app = FastAPI(title="Code Review Environment")
 

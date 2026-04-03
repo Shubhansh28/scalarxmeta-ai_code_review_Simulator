@@ -1,6 +1,6 @@
 from typing import Any, Dict, Tuple
-from .models import Observation, Action, Reward, Info
-from .tasks import get_task
+from env.models import Observation, Action, Reward, Info
+from env.tasks import get_task
 
 class CodeReviewEnv:
     def __init__(self, task_type: str = "syntax_review", task_index: int = 0, max_steps: int = 8):
@@ -27,7 +27,7 @@ class CodeReviewEnv:
         self.step_count += 1
         self.actions_history.append(action.dict())
         
-        from .graders import evaluate_step
+        from env.graders import evaluate_step
         step_reward, new_bugs = evaluate_step(self.task_data, action, self.bugs_identified)
         self.bugs_identified.update(new_bugs)
         
@@ -48,7 +48,7 @@ class CodeReviewEnv:
         self.total_score = max(0.0, self.total_score)
 
         if self.done:
-            from .graders import finalize_episode
+            from env.graders import finalize_episode
             penalty = finalize_episode(self.task_data, self.bugs_identified)
             self.total_score += penalty
             
