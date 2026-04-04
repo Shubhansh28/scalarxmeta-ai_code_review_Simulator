@@ -8,10 +8,10 @@ from openai import OpenAI
 # Required Environment Variables (Mandatory for Hackathon)
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN", "your_huggingface_token_here")
+HF_TOKEN = os.getenv("HF_TOKEN", os.getenv("OPENAI_API_KEY", "your_token_here"))
 
-# Environment Endpoint (Local or Hosted)
-API_URL = os.getenv("API_URL", "https://ashmitsahu-scalarxmeta.hf.space")
+# Environment Endpoint (Defaults to local for validation, override with API_URL)
+API_URL = os.getenv("API_URL", "http://localhost:7860")
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -19,29 +19,13 @@ def log_start(task: str, env: str, model: str) -> None:
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    # Format action to be concise for logs
+    action_log = action.replace("\n", " ").strip()[:100]
+    print(f"[STEP] step={step} action={action_log} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
-
-def validate_action(raw_action: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Sanitizes and validates the model's JSON output.
-    Ensures mandatory fields are present and meet minimum quality.
-    """
-    valid_action = {
-        "action_type": raw_action.get("action_type", "comment"),
-        "file": raw_action.get("file", "unknown"),
-        "line": raw_action.get("line", 0),
-        "comment": raw_action.get("comment", "Analyzing the codebase for potential logic flaws and edge cases.")
-    }
-    
-    # Enforce minimum comment length if it's too short
-    if len(valid_action["comment"].split()) < 3:
-        valid_action["comment"] = f"Reviewing {valid_action['file']} for potential logic errors, edge cases, and unexpected failures."
-        
-    return valid_action
 
 async def get_model_message(
     client: OpenAI, 
@@ -52,41 +36,29 @@ async def get_model_message(
     found_issues: Set[str]
 ) -> Dict[str, Any]:
     """
-    Generates the next action using advanced reasoning and adaptive strategy.
+    Generates the next action using the LLM.
     """
-    adaptive_hint = ""
-    if last_reward < 0:
-        adaptive_hint = "\n> CRITICAL NOTICE: Your previous action received a negative reward or was unjustified. If you are requesting changes without first pointing out specific bugs with 'comment' actions, you will be penalized. DO NOT REQUEST CHANGES until you have identified at least one valid bug."
-
     prompt = f"""
     Step {step}: Last Reward: {last_reward}
-    {adaptive_hint}
     
     ### Task Context
     - PR Title: {obs.get('title')}
     - Description: {obs.get('description')}
-    - Files Changed (Deltas): {json.dumps(obs.get('files_changed'), indent=2)}
+    - Files Changed: {json.dumps(obs.get('files_changed'), indent=2)}
     
-    ### Review History (Cumulative)
-    {json.dumps(history, indent=2)}
+    ### Review History
+    {json.dumps(history[-3:], indent=2)}
     
-    ### Known Issues Found
-    {list(found_issues)}
+    ### Instructions
+    1. Identify bugs and use 'comment' to point them out. 
+    2. Once done, 'request_changes' (if bugs found) or 'approve' (if none).
+    3. Output JSON.
     
-    ### Constraints & Instructions
-    1. You are a Senior Software Engineer. Your goal is to identify all bugs and maximize your score.
-    2. MANDATORY PROTOCOL: You must use 'comment' actions to point out specific defects before you use 'request_changes'.
-    3. SCORING WARNING: Requesting changes without having at least one valid 'comment' on a bug will result in a SEVERE score penalty.
-    4. Your 'comment' must be at least 10 words long and describe the failure mode (e.g., 'crashes', 'incorrect logic', 'memory leak').
-    5. If you have finished and found bugs, use 'request_changes'. If the PR is perfect, use 'approve'.
-    
-    Output ONLY valid JSON:
     {{
-      "reasoning": "Internal reasoning (e.g. 'I see a bug in file X, line Y. I will comment on it first before rejecting.')",
       "action_type": "comment" | "approve" | "request_changes",
       "file": "filename",
       "line": line_number,
-      "comment": "10+ words, specific failure analysis."
+      "comment": "Analysis of the code."
     }}
     """
     
@@ -94,27 +66,20 @@ async def get_model_message(
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "You are a senior engineer auditing code. Precision and detailed failure analysis are your top priorities. Output ONLY JSON."},
+                {"role": "system", "content": "You are a senior engineer auditing code. Output ONLY JSON."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"}
         )
-        raw_output = json.loads(response.choices[0].message.content)
-        return validate_action(raw_output)
+        return json.loads(response.choices[0].message.content)
     except Exception as e:
-        print(f"[DEBUG] Model/Parsing error: {e}", flush=True)
-        return {
-            "action_type": "comment", 
-            "file": "unknown", 
-            "line": 0,
-            "comment": "I am continuing to analyze the logical flow and potential edge cases within this pull request."
-        }
+        return {"action_type": "comment", "file": "unknown", "line": 0, "comment": f"Analysis pending... ({e})"}
 
 async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
     """
-    Runs a single task through the environment with adaptive memory and early stopping.
+    Runs a single task through the environment.
     """
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     BENCHMARK = "code_review_env"
     TASK_NAME = f"{task_type}_{task_index}"
     MAX_STEPS = 8
@@ -127,10 +92,10 @@ async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
     steps_taken = 0
     score = 0.0
     success = False
-    consecutive_penalties = 0
 
     async with httpx.AsyncClient() as http_client:
         try:
+            # 1. Reset Environment
             resp = await http_client.post(f"{API_URL}/reset", json={
                 "task_type": task_type,
                 "task_index": task_index
@@ -143,15 +108,20 @@ async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
             done = False
 
             for step in range(1, MAX_STEPS + 1):
-                if done:
-                    break
+                if done: break
 
+                # 2. Get Model Action
                 action_dict = await get_model_message(client, step, obs, last_reward, history, found_issues)
 
-                # step() -> OpenENV.step()
+                # 3. Step Environment
                 resp = await http_client.post(f"{API_URL}/step", json={
                     "session_id": session_id,
-                    "action": action_dict
+                    "action": {
+                        "action_type": action_dict.get("action_type", "comment"),
+                        "file": action_dict.get("file"),
+                        "line": action_dict.get("line"),
+                        "comment": action_dict.get("comment")
+                    }
                 })
                 step_result = resp.json()
                 
@@ -164,28 +134,11 @@ async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
                 steps_taken = step
                 last_reward = reward
                 
-                # Adaptive logic: track penalties
-                if reward < 0:
-                    consecutive_penalties += 1
-                else:
-                    consecutive_penalties = 0
-                    if action_dict["action_type"] == "comment":
-                        found_issues.add(f"{action_dict['file']}:{action_dict['line']}")
+                if action_dict.get("action_type") == "comment":
+                    found_issues.add(f"{action_dict.get('file')}:{action_dict.get('line')}")
 
                 log_step(step=step, action=action_dict.get("action_type", "unknown"), reward=reward, done=done, error=None)
-
-                # Store structured history
-                history.append({
-                    "step": step,
-                    "action": action_dict.get("action_type"),
-                    "reward": round(reward, 2),
-                    "summary": action_dict.get("comment", "")[:50] + "..."
-                })
-
-                # Early stopping on repeated failure
-                if consecutive_penalties >= 3:
-                    print(f"[DEBUG] Early stopping: consecutive penalties threshold reached.", flush=True)
-                    break
+                history.append({"step": step, "action": action_dict.get("action_type"), "reward": reward})
 
                 if done:
                     score = info.get("score", 0.0)
@@ -194,25 +147,24 @@ async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
             success = score >= 0.5
 
         except Exception as e:
-            print(f"[DEBUG] Runtime error: {e}", flush=True)
-            success = False
+            log_step(step=steps_taken+1, action="error", reward=0.0, done=True, error=str(e))
         finally:
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     
     return score
 
 async def main() -> None:
-    # Reproduce baseline on the mandatory tasks
     tasks = [
         ("syntax_review", 0),
         ("bug_detection", 0),
         ("adversarial_review", 0)
     ]
-    avg_score = 0.0
+    scores = []
     for t_type, t_idx in tasks:
-        avg_score += await run_baseline_task(t_type, t_idx)
+        scores.append(await run_baseline_task(t_type, t_idx))
     
-    print(f"\n[SUMMARY] Baseline Evaluation Complete. Average Score: {avg_score/len(tasks):.3f}")
+    avg = sum(scores) / len(scores) if scores else 0.0
+    print(f"\n[SUMMARY] Evaluation Complete. Avg Score: {avg:.3f}")
 
 if __name__ == "__main__":
     asyncio.run(main())

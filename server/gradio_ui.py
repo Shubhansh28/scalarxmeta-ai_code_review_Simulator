@@ -1,8 +1,8 @@
 import gradio as gr
-from env.environment import CodeReviewEnv
-from env.models import Action
-from github_fetcher import fetch_full_pr
-from ai_reviewer import analyze_pr
+from .environment import CodeReviewEnv
+from .models import Action
+from .github_fetcher import fetch_full_pr
+from .ai_reviewer import analyze_pr
 import json
 import uuid
 import os

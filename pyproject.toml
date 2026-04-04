@@ -22,7 +22,7 @@ dependencies = [
 requires-python = ">=3.10"
 
 [project.scripts]
-code-review-env = "app:main"
+server = "server.app:main"
 
 [tool.openenv]
 task_types = ["syntax_review", "bug_detection", "full_review", "adversarial_review"]

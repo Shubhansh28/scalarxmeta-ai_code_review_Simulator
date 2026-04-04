@@ -2,7 +2,19 @@ name: code_review_env
 version: "1.0.0"
 description: Simulates software pull request review workflows with adversarial challenges.
 tasks:
-  - syntax_review
-  - bug_detection
-  - full_review
-  - adversarial_review
+  - id: syntax_review
+    name: Syntax & Style Review
+    description: Detect basic syntax errors and naming convention violations.
+    difficulty: easy
+  - id: bug_detection
+    name: Bug Detection
+    description: Identify logical flaws and off-by-one errors.
+    difficulty: medium
+  - id: full_review
+    name: Full Architectural Review
+    description: Complex multi-file dependencies and logic regressions.
+    difficulty: hard
+  - id: adversarial_review
+    name: Adversarial Security Review
+    description: Audit deceptive code designed to bypass basic static analysis.
+    difficulty: expert
