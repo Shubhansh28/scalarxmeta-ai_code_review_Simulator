@@ -45,7 +45,7 @@ BUG_DETECTION_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "client.py", "keyword": "status_code = 200"}
+            {"type": "logic", "file": "client.py", "keyword": "status_code"}
         ],
         "expected_action": "request_changes"
     },
@@ -73,7 +73,7 @@ BUG_DETECTION_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "cart.py", "keyword": "cart mutated in place"}
+            {"type": "logic", "file": "cart.py", "keyword": "mutated"}
         ],
         "expected_action": "request_changes"
     }
@@ -125,7 +125,7 @@ FULL_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "analytics.py", "keyword": "race condition"}
+            {"type": "logic", "file": "analytics.py", "keyword": "race"}
         ],
         "expected_action": "request_changes"
     }
@@ -143,7 +143,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "auth.py", "keyword": "True"}
+            {"type": "logic", "file": "auth.py", "keyword": "return True"}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
@@ -175,7 +175,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "processor.py", "keyword": "last"}
+            {"type": "logic", "file": "processor.py", "keyword": "loop"}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
