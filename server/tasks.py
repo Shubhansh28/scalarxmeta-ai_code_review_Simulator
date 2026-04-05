@@ -206,7 +206,49 @@ TASKS_MAP = {
 }
 
 def get_task(task_type: str, index: int = 0) -> Dict[str, Any]:
+    """Get a task by type and index. Supports flywheel_cases via the store."""
+    if task_type == "flywheel_cases":
+        return _get_flywheel_task(index)
+
     tasks = TASKS_MAP.get(task_type, [])
     if index < len(tasks):
         return tasks[index]
     return tasks[0] if tasks else {}
+
+
+def _get_flywheel_task(index: int = 0) -> Dict[str, Any]:
+    """Retrieve a simulation case from the flywheel store."""
+    try:
+        from .flywheel_store import FlywheelStore
+        store = FlywheelStore()
+        cases = store.get_all_cases()
+        if index < len(cases):
+            return cases[index]
+        return cases[0] if cases else {}
+    except Exception:
+        return {}
+
+
+def get_domain_tasks(language: str = "python", framework: str = "general", limit: int = 3) -> list:
+    """
+    Merge built-in seed cases with live-generated flywheel cases
+    for domain-matched benchmarking.
+    """
+    try:
+        from .flywheel_store import FlywheelStore
+        store = FlywheelStore()
+        return store.get_domain_cases(language=language, framework=framework, limit=limit)
+    except Exception:
+        return []
+
+
+def get_task_count(task_type: str) -> int:
+    """Return the number of available tasks for a given type."""
+    if task_type == "flywheel_cases":
+        try:
+            from .flywheel_store import FlywheelStore
+            store = FlywheelStore()
+            return len(store.get_all_cases())
+        except Exception:
+            return 0
+    return len(TASKS_MAP.get(task_type, []))

@@ -1,13 +1,14 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 from .models import Observation, Action, Reward, Info
 from .tasks import get_task
 
 class CodeReviewEnv:
-    def __init__(self, task_type: str = "syntax_review", task_index: int = 0, max_steps: int = 8, custom_data: dict = None):
+    def __init__(self, task_type: str = "syntax_review", task_index: int = 0, max_steps: int = 8, custom_data: dict = None, flywheel_store=None):
         self.task_type = task_type
         self.task_index = task_index
         self.max_steps = max_steps
         self.custom_data = custom_data
+        self.flywheel_store = flywheel_store  # Optional store reference for benchmark tracking
         self.reset()
         
     def reset(self) -> Observation:
@@ -60,10 +61,29 @@ class CodeReviewEnv:
             # Final clamping for the official 0.0-1.0 range
             self.total_score = max(0.0, min(1.0, self.total_score))
             info = Info(done=True, score=self.total_score, message="Episode completed")
+
+            # Record benchmark result to flywheel store if available
+            self._record_benchmark_result()
         else:
             info = Info(done=False, score=self.total_score)
 
         return self.state(), step_reward, self.done, info
+
+    def _record_benchmark_result(self):
+        """Record episode results to the flywheel store for pattern tracking."""
+        if self.flywheel_store is None:
+            return
+        try:
+            ground_truth = self.task_data.get("ground_truth_bugs", [])
+            for i, bug in enumerate(ground_truth):
+                keyword = bug.get("keyword", "")
+                if keyword:
+                    if i in self.bugs_identified:
+                        self.flywheel_store.record_confirmation(keyword)
+                    else:
+                        self.flywheel_store.record_flag(keyword)
+        except Exception:
+            pass  # Never crash the environment over analytics
 
     def state(self) -> Observation:
         return Observation(

@@ -1,3 +1,7 @@
+"""
+Unified Gradio UI — The Self-Learning Flywheel Dashboard.
+Three tabs: Flywheel Review, OpenEnv Simulator, Flywheel Dashboard.
+"""
 import gradio as gr
 from .environment import CodeReviewEnv
 from .models import Action
@@ -8,156 +12,47 @@ import uuid
 import os
 from openai import OpenAI
 
-# Global state
-env = None
-live_pr_data = None
-live_ai_result = None
-
 
 # ============================================================
-# 🤖 ONE-CLICK AI AGENT for OpenEnv Simulator
+# 🔄 TAB 1: FLYWHEEL REVIEW (Merged Live PR + Confidence)
 # ============================================================
 
-def run_ai_agent(task_type, task_index):
-    """
-    One-click: Loads a task, runs the AI agent step by step, returns the full
-    results. The user just picks difficulty and clicks one button.
-    """
-    # 1. Reset
-    sim_env = CodeReviewEnv(task_type=task_type, task_index=int(task_index))
-    obs = sim_env.state()
+def create_flywheel_review_handlers(store):
+    """Create handler functions that close over the flywheel store."""
 
-    # Show the PR
-    pr_display = f"## 📋 {obs.title}\n{obs.description}\n\n"
-    for f in obs.files_changed:
-        pr_display += f"### 📄 {f.filename}\n```diff\n{f.diff}\n```\n\n"
+    # Session state (per-tab, not per-user — acceptable for demo)
+    review_state = {
+        "pr_data": None,
+        "ai_result": None,
+        "session_id": None,
+        "benchmark_result": None,
+    }
 
-    # 2. Run AI
-    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-    MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
+    def fetch_and_benchmark(pr_url):
+        """Step 1+2: Fetch PR and run domain benchmark silently."""
+        review_state["ai_result"] = None
+        review_state["benchmark_result"] = None
+        review_state["session_id"] = None
 
-    if not HF_TOKEN:
-        log = "❌ **HF_TOKEN not set.** Add it as a Secret in your HF Space settings."
-        return pr_display, log, "0.00"
+        if not pr_url or "github.com" not in pr_url or "/pull/" not in pr_url:
+            return (
+                "❌ **Invalid URL.** Please enter a valid GitHub PR link.\n\nExample: `https://github.com/owner/repo/pull/1`",
+                "", "", "", ""
+            )
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+        # Fetch PR
+        pr_data = fetch_full_pr(pr_url)
+        if "error" in pr_data:
+            return (f"❌ **Error:** {pr_data['error']}", "", "", "", "")
 
-    files_context = ""
-    for f in obs.files_changed:
-        files_context += f"--- {f.filename} ---\n{f.diff}\n\n"
+        review_state["pr_data"] = pr_data
+        review_state["session_id"] = str(uuid.uuid4())
 
-    prompt = f"""You are a Senior Software Engineer reviewing a Pull Request.
+        meta = pr_data["metadata"]
+        files = pr_data["files"]
 
-### PR Details
-- Title: {obs.title}
-- Description: {obs.description}
-
-### Code Changes
-{files_context}
-
-### Instructions
-1. Find ALL bugs in the code. Be specific about file and line.
-2. Each comment must be at least 10 words with a clear explanation.
-3. After identifying bugs, decide: "approve" (no bugs) or "request_changes" (has bugs).
-
-Output ONLY this JSON:
-{{
-  "steps": [
-    {{
-      "action_type": "comment",
-      "file": "filename",
-      "line": 0,
-      "comment": "10+ word explanation of the bug found."
-    }}
-  ],
-  "final_decision": "approve" | "request_changes",
-  "decision_reason": "Why you approve or reject."
-}}"""
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=1500
-        )
-        ai_plan = json.loads(response.choices[0].message.content)
-    except Exception as e:
-        log = f"❌ AI Error: {str(e)}"
-        return pr_display, log, "0.00"
-
-    # 3. Execute each AI step against the environment
-    log = "## 🤖 AI Agent Execution Log\n\n"
-    step_num = 0
-
-    for step in ai_plan.get("steps", []):
-        action = Action(
-            action_type=step.get("action_type", "comment"),
-            comment=step.get("comment", ""),
-            file=step.get("file"),
-            line=step.get("line")
-        )
-        obs_new, reward, done, info = sim_env.step(action)
-        step_num += 1
-
-        icon = "✅" if reward > 0 else ("⚠️" if reward == 0 else "❌")
-        log += f"### Step {step_num} {icon}\n"
-        log += f"**Action:** `{step.get('action_type')}` on `{step.get('file', 'N/A')}`\n\n"
-        log += f"**Comment:** {step.get('comment', '')}\n\n"
-        log += f"**Reward:** `{reward:+.2f}` | **Running Score:** `{info.score:.2f}`\n\n---\n\n"
-
-        if done:
-            break
-
-    # 4. Final decision
-    if not done:
-        final = ai_plan.get("final_decision", "approve")
-        reason = ai_plan.get("decision_reason", "")
-        final_action = Action(action_type=final, comment=reason)
-        obs_new, reward, done, info = sim_env.step(final_action)
-        step_num += 1
-
-        icon = "✅" if reward > 0 else "❌"
-        log += f"### Step {step_num} — Final Decision {icon}\n"
-        log += f"**Action:** `{final.upper()}`\n\n"
-        log += f"**Reason:** {reason}\n\n"
-        log += f"**Reward:** `{reward:+.2f}` | **Final Score:** `{info.score:.2f}`\n\n"
-
-    final_score = f"{info.score:.2f}"
-    verdict = "✅ PASSED" if info.score >= 0.5 else "❌ FAILED"
-    log += f"\n## 🏆 Final Result: {verdict} — Score: **{final_score}/1.00**\n"
-
-    return pr_display, log, final_score
-
-
-# ============================================================
-# 🌐 LIVE PR REVIEW — Real-World GitHub Integration
-# ============================================================
-
-def fetch_live_pr(pr_url):
-    global live_pr_data, live_ai_result
-    live_ai_result = None
-
-    if not pr_url or "github.com" not in pr_url or "/pull/" not in pr_url:
-        return (
-            "❌ **Invalid URL.** Please enter a valid GitHub PR link.\n\nExample: `https://github.com/owner/repo/pull/1`",
-            "", "", ""
-        )
-
-    live_pr_data = fetch_full_pr(pr_url)
-
-    if "error" in live_pr_data:
-        return (f"❌ **Error:** {live_pr_data['error']}", "", "", "")
-
-    meta = live_pr_data["metadata"]
-    files = live_pr_data["files"]
-
-    pr_info = f"""## 📋 {meta['title']}
+        # PR info panel
+        pr_info = f"""## 📋 {meta['title']}
 **Author:** `{meta['author']}` • **Branch:** `{meta['head_branch']}` → `{meta['base_branch']}`
 **Status:** `{meta['state']}` • **Mergeable:** `{meta['mergeable_state']}`
 **Stats:** +{meta['additions']} additions, -{meta['deletions']} deletions across {meta['changed_files']} file(s)
@@ -166,80 +61,179 @@ def fetch_live_pr(pr_url):
 **Description:** {meta['description']}
 """
 
-    diff_display = ""
-    for f in files:
-        badge = "🟢" if f["status"] == "added" else ("🔴" if f["status"] == "removed" else "🟡")
-        diff_display += f"### {badge} {f['filename']} ({f['status']})\n"
-        diff_display += f"*+{f['additions']} / -{f['deletions']}*\n"
-        diff_display += f"```diff\n{f['patch']}\n```\n\n"
+        # Diff display
+        diff_display = ""
+        for f in files:
+            badge = "🟢" if f["status"] == "added" else ("🔴" if f["status"] == "removed" else "🟡")
+            diff_display += f"### {badge} {f['filename']} ({f['status']})\n"
+            diff_display += f"*+{f['additions']} / -{f['deletions']}*\n"
+            diff_display += f"```diff\n{f['patch']}\n```\n\n"
 
-    merge_status = ""
-    if meta["mergeable_state"] == "clean":
-        merge_status = "✅ **No merge conflicts detected.** This PR can be merged cleanly."
-    elif meta["mergeable"] is False:
-        merge_status = "⚠️ **Merge conflicts detected!** Resolve before merging."
-    else:
-        merge_status = f"ℹ️ Merge status: `{meta['mergeable_state']}`"
+        # Merge status
+        if meta["mergeable_state"] == "clean":
+            merge_status = "✅ **No merge conflicts detected.** This PR can be merged cleanly."
+        elif meta["mergeable"] is False:
+            merge_status = "⚠️ **Merge conflicts detected!** Resolve before merging."
+        else:
+            merge_status = f"ℹ️ Merge status: `{meta['mergeable_state']}`"
 
-    return (
-        pr_info, diff_display, merge_status,
-        f"✅ Fetched {len(files)} file(s). Click **🤖 Run AI Review** to analyze."
-    )
+        # Step 2: Run domain benchmark
+        from .confidence_engine import run_domain_benchmark
+        benchmark = run_domain_benchmark(pr_data, store)
+        review_state["benchmark_result"] = benchmark
+
+        if benchmark["cases_run"] > 0:
+            bench_icon = "✅" if benchmark["passed"] else "⚠️"
+            bench_display = f"""### {bench_icon} Pre-Review Domain Benchmark
+
+**Language:** `{benchmark['language']}` • **Framework:** `{benchmark['framework']}`
+**Domain Score:** `{benchmark['score']:.0%}` (threshold: `{benchmark['threshold']:.0%}`)
+**Cases Tested:** {benchmark['cases_run']}
+
+{benchmark['message']}
+
+"""
+            for d in benchmark.get("details", []):
+                src_badge = "🌱" if d.get("source") == "seed" else "🔵"
+                bench_display += f"- {src_badge} `{d['case_id']}` — {d['title']} → Score: `{d['score']:.2f}`\n"
+        else:
+            bench_display = f"ℹ️ {benchmark.get('message', 'No benchmark data available.')}"
+
+        status = f"✅ Fetched {len(files)} file(s). Click **🤖 Run AI Review** to analyze."
+
+        return (pr_info, diff_display, merge_status, bench_display, status)
 
 
-def run_ai_review():
-    global live_pr_data, live_ai_result
+    def run_review():
+        """Step 3+4: Run AI review with confidence annotations."""
+        pr_data = review_state.get("pr_data")
+        if pr_data is None or "error" in pr_data:
+            return "❌ No PR data loaded. Fetch a PR first.", ""
 
-    if live_pr_data is None or "error" in live_pr_data:
-        return "❌ No PR data loaded. Fetch a PR first.", ""
+        # Run raw AI analysis
+        raw_result = analyze_pr(pr_data)
 
-    live_ai_result = analyze_pr(live_pr_data)
+        # Annotate with confidence scores
+        from .confidence_engine import annotate_comments
+        annotated = annotate_comments(raw_result, store)
+        review_state["ai_result"] = annotated
 
-    comments_display = "## 🤖 AI Review Results\n\n"
-    for i, comment in enumerate(live_ai_result.get("comments", []), 1):
-        severity = comment.get("severity", "info")
-        icon = "🔴" if severity == "error" else ("🟡" if severity == "warning" else "🔵")
-        comments_display += f"### {icon} Finding #{i} — `{comment['file']}`\n"
-        comments_display += f"**Severity:** {severity.upper()}\n\n"
-        comments_display += f"{comment['comment']}\n\n---\n\n"
+        # Register session in flywheel store for signal tracking
+        session_id = review_state.get("session_id", str(uuid.uuid4()))
+        store.register_review_session(session_id, pr_data, annotated)
 
-    verdict = live_ai_result.get("overall_verdict", "unknown")
-    verdict_reason = live_ai_result.get("verdict_reason", "")
-    verdict_icon = "✅" if verdict == "approve" else "❌"
+        # Build rich display with confidence badges
+        comments_display = "## 🤖 AI Review Results (Confidence-Annotated)\n\n"
+        for i, comment in enumerate(annotated.get("comments", []), 0):
+            severity = comment.get("severity", "info")
+            icon = "🔴" if severity == "error" else ("🟡" if severity == "warning" else "🔵")
 
-    verdict_display = f"""## {verdict_icon} AI Verdict: **{verdict.upper()}**
+            # Confidence badge
+            conf = comment.get("confidence", 50)
+            conf_src = comment.get("confidence_source", "general_baseline")
+            is_novelty = comment.get("is_novelty", False)
+
+            if is_novelty:
+                conf_badge = "🔮 **Novelty Alert** — Unfamiliar pattern"
+            elif conf >= 75:
+                conf_badge = f"🟢 **{conf:.0f}% confident**"
+            elif conf >= 50:
+                conf_badge = f"🟡 **{conf:.0f}% confident**"
+            else:
+                conf_badge = f"🔴 **{conf:.0f}% confident**"
+
+            src_label = "general baseline" if conf_src == "general_baseline" else "project-specific"
+
+            comments_display += f"### {icon} Finding #{i+1} — `{comment['file']}`\n"
+            comments_display += f"**Severity:** {severity.upper()} • {conf_badge} ({src_label})\n\n"
+            comments_display += f"{comment['comment']}\n\n"
+            comments_display += f"*Pattern: `{comment.get('pattern_keyword', 'unknown')}`*\n\n---\n\n"
+
+        # Verdict
+        verdict = annotated.get("overall_verdict", "unknown")
+        verdict_reason = annotated.get("verdict_reason", "")
+        verdict_icon = "✅" if verdict == "approve" else "❌"
+
+        verdict_display = f"""## {verdict_icon} AI Verdict: **{verdict.upper()}**
 
 {verdict_reason}
 
-> **Note:** This is the AI's recommendation. The final decision is yours.
+> **Note:** This is the AI's recommendation. Use the buttons below to provide your feedback on each finding.
 """
+        return comments_display, verdict_display
 
-    return comments_display, verdict_display
+
+    def confirm_bug(bug_index_str):
+        """Developer confirms a specific AI finding as a real bug."""
+        session_id = review_state.get("session_id")
+        if not session_id:
+            return "❌ No active review session."
+
+        try:
+            bug_index = int(bug_index_str)
+        except (ValueError, TypeError):
+            return "❌ Enter a valid finding number (0-indexed)."
+
+        from .feedback_bridge import capture_developer_signal
+        result = capture_developer_signal(
+            store=store,
+            session_id=session_id,
+            signal_type="confirm_bug",
+            bug_index=bug_index,
+        )
+
+        msg = f"✅ **Finding #{bug_index + 1} confirmed as a real bug.**"
+        if result.get("converted"):
+            msg += f"\n\n🔄 **Flywheel activated!** A new simulation case `{result.get('case_id')}` has been added to the library."
+        return msg
 
 
-def user_approve():
-    if live_pr_data is None:
-        return "No PR loaded."
-    meta = live_pr_data["metadata"]
-    return f"""## ✅ PR APPROVED
+    def dismiss_bug(bug_index_str):
+        """Developer dismisses a specific AI finding as a false positive."""
+        session_id = review_state.get("session_id")
+        if not session_id:
+            return "❌ No active review session."
+
+        try:
+            bug_index = int(bug_index_str)
+        except (ValueError, TypeError):
+            return "❌ Enter a valid finding number (0-indexed)."
+
+        from .feedback_bridge import capture_developer_signal
+        result = capture_developer_signal(
+            store=store,
+            session_id=session_id,
+            signal_type="dismiss",
+            bug_index=bug_index,
+        )
+
+        return f"❌ **Finding #{bug_index + 1} dismissed as false positive.** Pattern weight reduced."
+
+
+    def approve_pr():
+        pr_data = review_state.get("pr_data")
+        if not pr_data:
+            return "No PR loaded."
+        meta = pr_data["metadata"]
+        return f"""## ✅ PR APPROVED
 
 **PR:** {meta['title']} by `{meta['author']}`
 
 You can now merge on GitHub: 👉 [{meta['html_url']}]({meta['html_url']})
 """
 
-
-def user_reject():
-    if live_pr_data is None:
-        return "No PR loaded."
-    meta = live_pr_data["metadata"]
-    findings = ""
-    if live_ai_result and "comments" in live_ai_result:
-        for c in live_ai_result["comments"]:
-            if c["severity"] in ["error", "warning"]:
-                findings += f"- **{c['file']}**: {c['comment']}\n"
-
-    return f"""## ❌ PR REJECTED
+    def reject_pr():
+        pr_data = review_state.get("pr_data")
+        if not pr_data:
+            return "No PR loaded."
+        meta = pr_data["metadata"]
+        ai_result = review_state.get("ai_result")
+        findings = ""
+        if ai_result and "comments" in ai_result:
+            for c in ai_result["comments"]:
+                if c["severity"] in ["error", "warning"]:
+                    findings += f"- **{c['file']}**: {c['comment']}\n"
+        return f"""## ❌ PR REJECTED
 
 **PR:** {meta['title']} by `{meta['author']}`
 
@@ -249,85 +243,164 @@ def user_reject():
 Share feedback: 👉 [{meta['html_url']}]({meta['html_url']})
 """
 
+    return {
+        "fetch_and_benchmark": fetch_and_benchmark,
+        "run_review": run_review,
+        "confirm_bug": confirm_bug,
+        "dismiss_bug": dismiss_bug,
+        "approve_pr": approve_pr,
+        "reject_pr": reject_pr,
+    }
+
 
 # ============================================================
-# 🎨 GRADIO UI
+# 📊 TAB 3: FLYWHEEL DASHBOARD
 # ============================================================
 
-with gr.Blocks(theme=gr.themes.Soft(), title="ScalarX Meta — AI Code Review") as demo:
+def get_dashboard_data(store):
+    """Generate dashboard markdown from store stats."""
+    stats = store.get_library_stats()
+    patterns = store.get_all_pattern_stats()
 
-    with gr.Tabs():
+    # Header stats
+    dashboard = f"""## 📊 Flywheel Health
 
-        # ====== TAB 1: Live PR Review ======
-        with gr.TabItem("🌐 Live PR Review"):
-            gr.Markdown("# 🌐 Live GitHub PR Review")
-            gr.Markdown("Paste a GitHub PR URL → Fetch → AI analyzes → You decide.")
+| Metric | Value |
+|:---|:---|
+| **Total Simulation Cases** | {stats['total_cases']} |
+| **Seed Cases** | {stats['seed_cases']} |
+| **Live-Generated Cases** | {stats['live_cases']} |
+| **Patterns Tracked** | {stats['total_patterns_tracked']} |
 
-            with gr.Row():
-                pr_url_input = gr.Textbox(
-                    label="GitHub PR URL",
-                    placeholder="https://github.com/owner/repo/pull/1",
-                    scale=4
-                )
-                fetch_btn = gr.Button("📥 Fetch PR", variant="primary", scale=1)
+### 🌍 Cases by Language
+"""
+    for lang, count in stats.get("by_language", {}).items():
+        dashboard += f"- **{lang.capitalize()}**: {count} cases\n"
 
-            with gr.Row():
-                with gr.Column(scale=1):
-                    live_pr_info = gr.Markdown("Enter a GitHub PR URL and click **Fetch PR**.")
-                    live_merge_status = gr.Markdown("")
-                    live_status = gr.Markdown("")
-                    gr.Markdown("---")
-                    analyze_btn = gr.Button("🤖 Run AI Review", variant="secondary", size="lg")
-                    gr.Markdown("---")
-                    gr.Markdown("### 🧑‍💻 Your Decision")
-                    with gr.Row():
-                        approve_btn = gr.Button("✅ Approve PR", variant="primary")
-                        reject_btn = gr.Button("❌ Reject PR", variant="stop")
-                    user_decision_output = gr.Markdown("")
+    # Recent cases
+    dashboard += "\n### 🕐 Recent Cases\n"
+    if stats.get("recent_cases"):
+        dashboard += "| Case ID | Title | Source |\n|:---|:---|:---|\n"
+        for c in stats["recent_cases"]:
+            src_badge = "🌱 Seed" if c["source"] == "seed" else "🔵 Live"
+            dashboard += f"| `{c['case_id']}` | {c['title']} | {src_badge} |\n"
+    else:
+        dashboard += "*No cases yet.*\n"
 
-                with gr.Column(scale=2):
-                    with gr.Tabs():
-                        with gr.TabItem("📄 Code Changes"):
-                            live_diff_view = gr.Markdown("Diff appears here after fetching.")
-                        with gr.TabItem("🤖 AI Analysis"):
-                            ai_comments_output = gr.Markdown("Click **Run AI Review** after fetching.")
-                            ai_verdict_output = gr.Markdown("")
+    # Pattern accuracy
+    dashboard += "\n### 🎯 Pattern Accuracy\n"
+    if patterns:
+        dashboard += "| Pattern | Flagged | Confirmed | Dismissed | Accuracy | Weight |\n"
+        dashboard += "|:---|:---:|:---:|:---:|:---:|:---:|\n"
+        for kw, p in patterns.items():
+            dashboard += f"| `{kw}` | {p['times_flagged']} | {p['times_confirmed']} | {p['times_dismissed']} | {p.get('accuracy', 0):.0f}% | {p['decay_weight']:.2f} |\n"
+    else:
+        dashboard += "*No patterns tracked yet. Review some PRs to start the flywheel!*\n"
 
-            fetch_btn.click(fetch_live_pr, inputs=[pr_url_input],
-                            outputs=[live_pr_info, live_diff_view, live_merge_status, live_status])
-            analyze_btn.click(run_ai_review, inputs=[], outputs=[ai_comments_output, ai_verdict_output])
-            approve_btn.click(user_approve, inputs=[], outputs=[user_decision_output])
-            reject_btn.click(user_reject, inputs=[], outputs=[user_decision_output])
+    return dashboard
 
-        # ====== TAB 2: OpenEnv Simulator (SIMPLIFIED) ======
-        with gr.TabItem("🛡️ OpenEnv Simulator"):
-            gr.Markdown("# 🛡️ AI Code Review Benchmark")
-            gr.Markdown("Pick a difficulty → Click **Run** → Watch the AI agent find bugs in real time.")
 
-            with gr.Row():
-                with gr.Column(scale=1):
-                    sim_task_type = gr.Dropdown(
-                        label="Difficulty",
-                        choices=["syntax_review", "bug_detection", "full_review", "adversarial_review"],
-                        value="syntax_review"
+# ============================================================
+# 🎨 MAIN UI ASSEMBLY
+# ============================================================
+
+def create_demo(store):
+    """Build the full Gradio UI with flywheel store injected."""
+
+    handlers = create_flywheel_review_handlers(store)
+
+    with gr.Blocks(theme=gr.themes.Soft(), title="ScalarX Meta — Self-Learning Flywheel") as demo:
+
+        gr.Markdown("# 🔄 ScalarX Meta — Self-Learning Flywheel")
+        gr.Markdown("*The more you review, the smarter it gets.*")
+
+        with gr.Tabs():
+
+            # ====== TAB 1: Flywheel Review ======
+            with gr.TabItem("🔄 Flywheel Review"):
+                gr.Markdown("# 🔄 Live PR Review with Confidence Scoring")
+                gr.Markdown("Paste a GitHub PR URL → Fetch & Benchmark → AI analyzes with confidence → You confirm or dismiss each finding → Flywheel learns.")
+
+                with gr.Row():
+                    pr_url_input = gr.Textbox(
+                        label="GitHub PR URL",
+                        placeholder="https://github.com/owner/repo/pull/1",
+                        scale=4
                     )
-                    sim_task_index = gr.Number(label="Task Index", value=0, precision=0)
-                    sim_run_btn = gr.Button("🤖 Run AI Agent", variant="primary", size="lg")
-                    gr.Markdown("---")
-                    sim_score = gr.Label(label="Final Score / 1.0")
+                    fetch_btn = gr.Button("📥 Fetch & Benchmark", variant="primary", scale=1)
 
-                with gr.Column(scale=2):
-                    with gr.Tabs():
-                        with gr.TabItem("📋 Challenge"):
-                            sim_pr_display = gr.Markdown("Select a difficulty and click **Run AI Agent**.")
-                        with gr.TabItem("📊 AI Agent Log"):
-                            sim_log = gr.Markdown("Results will appear here after the AI runs.")
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        live_pr_info = gr.Markdown("Enter a GitHub PR URL and click **Fetch & Benchmark**.")
+                        live_merge_status = gr.Markdown("")
+                        live_benchmark_status = gr.Markdown("")
+                        live_status = gr.Markdown("")
+                        gr.Markdown("---")
+                        analyze_btn = gr.Button("🤖 Run AI Review", variant="secondary", size="lg")
+                        gr.Markdown("---")
 
-            sim_run_btn.click(
-                run_ai_agent,
-                inputs=[sim_task_type, sim_task_index],
-                outputs=[sim_pr_display, sim_log, sim_score]
-            )
+                        # Confirm / Dismiss individual findings
+                        gr.Markdown("### 🔬 Per-Finding Feedback")
+                        gr.Markdown("Enter the finding number (starting from 0) to confirm or dismiss:")
+                        with gr.Row():
+                            bug_index_input = gr.Number(label="Finding #", value=0, precision=0, scale=1)
+                        with gr.Row():
+                            confirm_btn = gr.Button("✅ Confirm Bug", variant="primary", scale=1)
+                            dismiss_btn = gr.Button("❌ Not a Bug", variant="stop", scale=1)
+                        signal_output = gr.Markdown("")
 
-if __name__ == "__main__":
-    demo.launch()
+                        gr.Markdown("---")
+                        gr.Markdown("### 🧑‍💻 Final Decision")
+                        with gr.Row():
+                            approve_btn = gr.Button("✅ Approve PR", variant="primary")
+                            reject_btn = gr.Button("❌ Reject PR", variant="stop")
+                        user_decision_output = gr.Markdown("")
+
+                    with gr.Column(scale=2):
+                        with gr.Tabs():
+                            with gr.TabItem("📄 Code Changes"):
+                                live_diff_view = gr.Markdown("Diff appears here after fetching.")
+                            with gr.TabItem("🤖 AI Analysis"):
+                                ai_comments_output = gr.Markdown("Click **Run AI Review** after fetching.")
+                                ai_verdict_output = gr.Markdown("")
+
+                # Wire up events
+                fetch_btn.click(
+                    handlers["fetch_and_benchmark"],
+                    inputs=[pr_url_input],
+                    outputs=[live_pr_info, live_diff_view, live_merge_status, live_benchmark_status, live_status]
+                )
+                analyze_btn.click(
+                    handlers["run_review"],
+                    inputs=[],
+                    outputs=[ai_comments_output, ai_verdict_output]
+                )
+                confirm_btn.click(
+                    handlers["confirm_bug"],
+                    inputs=[bug_index_input],
+                    outputs=[signal_output]
+                )
+                dismiss_btn.click(
+                    handlers["dismiss_bug"],
+                    inputs=[bug_index_input],
+                    outputs=[signal_output]
+                )
+                approve_btn.click(handlers["approve_pr"], inputs=[], outputs=[user_decision_output])
+                reject_btn.click(handlers["reject_pr"], inputs=[], outputs=[user_decision_output])
+
+
+            # ====== TAB 2: Flywheel Dashboard ======
+            with gr.TabItem("📊 Flywheel Dashboard"):
+                gr.Markdown("# 📊 Self-Learning Flywheel Dashboard")
+                gr.Markdown("Track the health of your simulation library and pattern accuracy.")
+
+                dashboard_display = gr.Markdown(get_dashboard_data(store))
+                dashboard_refresh_btn = gr.Button("🔄 Refresh Dashboard", variant="secondary")
+
+                dashboard_refresh_btn.click(
+                    lambda: get_dashboard_data(store),
+                    inputs=[],
+                    outputs=[dashboard_display]
+                )
+
+    return demo
