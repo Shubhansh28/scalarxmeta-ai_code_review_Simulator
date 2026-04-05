@@ -12,7 +12,7 @@ SYNTAX_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "syntax", "file": "profiles.py", "keyword": "Age"}
+            {"type": "syntax", "file": "profiles.py", "keyword": "Age", "line": 12}
         ],
         "expected_action": "request_changes"
     },
@@ -27,9 +27,22 @@ SYNTAX_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "syntax", "file": "data.py", "keyword": "results=[]"}
+            {"type": "syntax", "file": "data.py", "keyword": "results=[]", "line": 13}
         ],
         "expected_action": "request_changes"
+    },
+    {
+        "pr_id": "PR-103",
+        "title": "Fix indentation in loop",
+        "description": "Correcting return statement indentation.",
+        "files_changed": [
+            {
+                "filename": "loops.py",
+                "diff": "@@ -5,4 +5,4 @@\n def sum_positive(nums):\n     total = 0\n     for n in nums:\n-        if n > 0:\n-            total += n\n-    return total\n+        if n > 0: total += n\n+    return total"
+            }
+        ],
+        "ground_truth_bugs": [],
+        "expected_action": "approve"
     }
 ]
 
@@ -45,7 +58,7 @@ BUG_DETECTION_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "client.py", "keyword": "status_code"}
+            {"type": "logic", "file": "client.py", "keyword": "status_code", "line": 48}
         ],
         "expected_action": "request_changes"
     },
@@ -73,9 +86,22 @@ BUG_DETECTION_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "cart.py", "keyword": "mutated"}
+            {"type": "logic", "file": "cart.py", "keyword": "mutated", "line": 23}
         ],
         "expected_action": "request_changes"
+    },
+    {
+        "pr_id": "PR-204",
+        "title": "Fix infinite recursion in tree walk",
+        "description": "Correcting the base case for the recursive call.",
+        "files_changed": [
+            {
+                "filename": "tree.py",
+                "diff": "@@ -10,3 +10,3 @@\n def walk(node):\n-    if not node: return\n+    if node is None: return\n     walk(node.left)\n     walk(node.right)"
+            }
+        ],
+        "ground_truth_bugs": [],
+        "expected_action": "approve"
     }
 ]
 
@@ -95,7 +121,7 @@ FULL_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "db.py", "keyword": "user_key"}
+            {"type": "logic", "file": "db.py", "keyword": "user_key", "line": 21}
         ],
         "expected_action": "request_changes"
     },
@@ -110,7 +136,7 @@ FULL_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "cache.py", "keyword": "memory"}
+            {"type": "logic", "file": "cache.py", "keyword": "memory", "line": 8}
         ],
         "expected_action": "request_changes"
     },
@@ -125,9 +151,22 @@ FULL_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "analytics.py", "keyword": "race"}
+            {"type": "logic", "file": "analytics.py", "keyword": "race", "line": 11}
         ],
         "expected_action": "request_changes"
+    },
+    {
+        "pr_id": "PR-304",
+        "title": "Data migration script for user status",
+        "description": "Script to update user account active status.",
+        "files_changed": [
+            {
+                "filename": "migrate.py",
+                "diff": "@@ -5,4 +5,4 @@\n def run_migration(db):\n-    db.execute(\"UPDATE users SET status='active'\")\n+    db.execute(\"UPDATE users SET status='active' WHERE status IS NULL\")"
+            }
+        ],
+        "ground_truth_bugs": [],
+        "expected_action": "approve"
     }
 ]
 
@@ -143,7 +182,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "auth.py", "keyword": "return True"}
+            {"type": "logic", "file": "auth.py", "keyword": "return True", "line": 13}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
@@ -159,7 +198,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "stats.py", "keyword": "empty"}
+            {"type": "logic", "file": "stats.py", "keyword": "empty", "line": 7}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
@@ -175,7 +214,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "processor.py", "keyword": "loop"}
+            {"type": "logic", "file": "processor.py", "keyword": "loop", "line": 22}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
@@ -191,7 +230,7 @@ ADVERSARIAL_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "security.py", "keyword": "md5"}
+            {"type": "logic", "file": "security.py", "keyword": "md5", "line": 6}
         ],
         "expected_action": "request_changes",
         "pr_type": "adversarial"
