@@ -3,7 +3,7 @@
 # Configuration
 # export HF_TOKEN="your_token_here"
 export API_URL="http://localhost:7860"
-export MODEL_NAME="Qwen/Qwen2.5-Coder-32B-Instruct"
+export MODEL_NAME="google/gemma-2-9b-it:free"
 
 echo "=== Starting Reproducibility Verification ==="
 echo "Running 3 sequential evaluations..."

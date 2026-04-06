@@ -57,9 +57,9 @@ Unique to ScalarX Meta is a **Self-Learning Flywheel** (accessible via the Web U
 
 ### 1. Requirements
 Ensure you have the following environment variables defined:
-*   `API_BASE_URL`: The LLM inference endpoint (e.g., Hugging Face Router).
-*   `MODEL_NAME`: The model identifier (e.g., `Qwen/Qwen2.5-Coder-32B-Instruct`).
-*   `HF_TOKEN`: Your Hugging Face API key.
+*   `API_BASE_URL`: The LLM inference endpoint (e.g., Hugging Face Router or OpenRouter).
+*   `MODEL_NAME`: The model identifier (e.g., `google/gemma-2-9b-it:free`).
+*   `HF_TOKEN` or `OPENROUTER_API_KEY`: Your provider's API key.
 
 ### 2. Local Setup
 ```bash
@@ -68,8 +68,8 @@ git clone <your-repo-url>
 cd scalarxmeta
 pip install -r requirements.txt
 
-# Create a .env file with your credentials
-echo "HF_TOKEN=your_token" > .env
+# Create a .env file with your credentials (HF or OpenRouter)
+echo "OPENROUTER_API_KEY=your_token" > .env
 
 # Start the environment server
 uvicorn server.app:app --port 7860

@@ -9,10 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Required Environment Variables (Mandatory for Hackathon)
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-1B-Instruct")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-2-9b-it:free")
 # Prioritize HF_TOKEN as per requirements, fallback to API_KEY or OPENAI_API_KEY
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+HF_TOKEN = OPENROUTER_API_KEY or os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
 
 # Environment Endpoint
 API_URL = os.getenv("API_URL", "http://localhost:7860")
@@ -82,7 +83,14 @@ async def get_model_message(
         return {"action_type": "comment", "file": "unknown", "line": 0, "comment": f"Continuing analysis... (Error: {e})"}
 
 async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    client = OpenAI(
+        base_url=API_BASE_URL, 
+        api_key=HF_TOKEN,
+        default_headers={
+            "HTTP-Referer": "https://localhost:7860",
+            "X-Title": "ScalarXMeta Simulator"
+        }
+    )
     BENCHMARK = "code_review_env"
     TASK_NAME = f"{task_type}_{task_index}"
     MAX_STEPS = 8

@@ -47,9 +47,10 @@ def run_domain_benchmark(
         }
 
     # Run agent against each case
-    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-    MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+    MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-2-9b-it:free")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    HF_TOKEN = OPENROUTER_API_KEY or os.getenv("HF_TOKEN", "")
 
     if not HF_TOKEN:
         return {
@@ -63,7 +64,14 @@ def run_domain_benchmark(
         }
 
     from openai import OpenAI
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    client = OpenAI(
+        base_url=API_BASE_URL, 
+        api_key=HF_TOKEN,
+        default_headers={
+            "HTTP-Referer": "https://localhost:7860",
+            "X-Title": "ScalarXMeta Simulator"
+        }
+    )
 
     total_score = 0.0
     details = []
