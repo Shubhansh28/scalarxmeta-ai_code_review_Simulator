@@ -47,9 +47,9 @@ def run_domain_benchmark(
         }
 
     # Run agent against each case
-    API_BASE_URL = os.getenv("API_BASE_URL", "https://text.pollinations.ai/v1")
-    MODEL_NAME = os.getenv("MODEL_NAME", "openai")
-    HF_TOKEN = os.getenv("HF_TOKEN", "any_string_for_pollinations")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+    MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
+    HF_TOKEN = os.getenv("HF_TOKEN")
 
     if not HF_TOKEN:
         return {
@@ -104,38 +104,61 @@ Output ONLY this JSON:
   "final_decision": "approve" | "request_changes"
 }}"""
 
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=800
-            )
+            # Fallback models for benchmark
+            models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
+            retries_per_model = 2
+            ai_plan = None
+            
+            for model in models_to_try:
+                for attempt in range(retries_per_model):
+                    try:
+                        response = client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            temperature=0.1,
+                            max_tokens=800,
+                            timeout=120
+                        )
+                        
+                        raw_content = response.choices[0].message.content
+                        if not raw_content:
+                            raise ValueError("Empty content")
 
-            raw_content = response.choices[0].message.content
-            if not raw_content:
-                raise ValueError("Model returned empty content")
-
-            content = raw_content.strip()
-            # Robust extraction of the first JSON object
-            if "{" in content and "}" in content:
-                start_idx = content.find("{")
-                stack = 0
-                first_obj_end = -1
-                for i in range(start_idx, len(content)):
-                    if content[i] == "{":
-                        stack += 1
-                    elif content[i] == "}":
-                        stack -= 1
-                        if stack == 0:
-                            first_obj_end = i
-                            break
-                if first_obj_end != -1:
-                    content = content[start_idx:first_obj_end+1]
-
-            ai_plan = json.loads(content)
+                        content = raw_content.strip()
+                        if "{" in content and "}" in content:
+                            start_idx = content.find("{")
+                            stack = 0
+                            end_idx = -1
+                            for i in range(start_idx, len(content)):
+                                if content[i] == "{": stack += 1
+                                elif content[i] == "}":
+                                    stack -= 1
+                                    if stack == 0:
+                                        end_idx = i
+                                        break
+                            if end_idx != -1:
+                                content = content[start_idx:end_idx+1]
+                        
+                        ai_plan = json.loads(content)
+                        break
+                    except Exception as e:
+                        if "503" in str(e) or "loading" in str(e).lower():
+                            import time
+                            time.sleep(15)
+                            continue
+                        if attempt < retries_per_model - 1:
+                            import time
+                            time.sleep(2)
+                            continue
+                if ai_plan: break
+            
+            if not ai_plan:
+                logger.error(f"Benchmark failed for all models for case {case.task}")
+                details.append({"case": case.task, "score": 0.0, "error": "AI failed"})
+                continue
 
             # Execute steps
             for step in ai_plan.get("steps", [])[:3]:

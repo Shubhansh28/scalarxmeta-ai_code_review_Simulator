@@ -92,8 +92,8 @@ Output ONLY this JSON structure:
 }}
 """
 
-    # Fallback models for anonymous tier
-    models_to_try = [MODEL_NAME, "mistral", "unity"]
+    # Fallback models for Hugging Face Serverless tier
+    models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
     retries_per_model = 2
     last_error = None
     
@@ -108,7 +108,7 @@ Output ONLY this JSON structure:
                     ],
                     temperature=0.2,
                     max_tokens=2500,
-                    timeout=120 # Critical for reasoning models
+                    timeout=120
                 )
                 
                 raw_content = response.choices[0].message.content
@@ -137,6 +137,11 @@ Output ONLY this JSON structure:
             except Exception as e:
                 last_error = e
                 logger.warning(f"AI analysis with {model} (attempt {attempt+1}) failed: {e}")
+                # Handle model loading (503)
+                if "503" in str(e) or "loading" in str(e).lower():
+                    import time
+                    time.sleep(15) # Long wait for model load
+                    continue
                 if attempt < retries_per_model - 1:
                     import time
                     time.sleep(2)
@@ -147,7 +152,7 @@ Output ONLY this JSON structure:
     # If all fallbacks fail
     logger.error(f"AI analysis failed for all models: {last_error}")
     return {
-        "comments": [{"file": "system", "severity": "error", "comment": f"AI analysis failed across multiple models ({str(last_error)}). The free AI provider might be experiencing high load. Please try again in a few minutes."}],
+        "comments": [{"file": "system", "severity": "error", "comment": f"AI analysis failed across multiple models ({str(last_error)}). Please try again in a few minutes."}],
         "overall_verdict": "request_changes",
         "verdict_reason": f"Analysis could not be completed after several attempts: {str(last_error)}",
         "merge_conflicts_found": False
