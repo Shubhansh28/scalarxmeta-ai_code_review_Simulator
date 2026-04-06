@@ -24,7 +24,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     error_val = error if error else "null"
     done_val = str(done).lower()
     # Serialize action to a single line for the log_step requirement
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    print(f"[STEP]  step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)

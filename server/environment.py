@@ -38,6 +38,7 @@ class CodeReviewEnv:
         self.bugs_identified.update(new_bugs)
         
         step_reward -= 0.05 # Step penalty
+        step_reward = max(0.0, min(1.0, step_reward))
         
         if action.action_type == "comment":
             self.comments_history.append(f"[{action.file}:{action.line}] {action.comment}")

@@ -26,22 +26,70 @@ stop_at() {
   exit 1
 }
 
+portable_mktemp() {
+  local prefix="$1"
+  if command -v mktemp &>/dev/null; then
+    mktemp -t "$prefix.XXXXXX"
+  else
+    local hash; hash=$(date +%s%N | shasum | head -c 6)
+    echo "/tmp/$prefix.$hash"
+  fi
+}
+
+run_with_timeout() {
+  local timeout="$1"
+  shift
+  if command -v timeout &>/dev/null; then
+    timeout "$timeout" "$@"
+  elif command -v gtimeout &>/dev/null; then
+    gtimeout "$timeout" "$@"
+  else
+    "$@" &
+    local pid=$!
+    ( sleep "$timeout" && kill "$pid" 2>/dev/null ) &
+    local watcher=$!
+    wait "$pid"
+    local status=$?
+    kill "$watcher" 2>/dev/null
+    return $status
+  fi
+}
+
+CLEANUP_FILES=()
+cleanup() {
+  for f in "${CLEANUP_FILES[@]}"; do
+    [ -f "$f" ] && rm -f "$f"
+  done
+}
+trap cleanup EXIT
+
 printf "\n${BOLD}=== OpenEnv Pre-Submission Validator ===${NC}\n\n"
 
 # Step 1: Ping HF Space
-log "${BOLD}Step 1/3: Pinging Environment${NC} ($PING_URL/health) ..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PING_URL/health" --max-time 10 || echo "000")
+log "${BOLD}Step 1/3: Pinging Environment${NC} ($PING_URL/reset) ..."
+
+CURL_OUTPUT=$(portable_mktemp "validate-curl")
+CLEANUP_FILES+=("$CURL_OUTPUT")
+HTTP_CODE=$(curl -s -o "$CURL_OUTPUT" -w "%{http_code}" -X POST \
+  -H "Content-Type: application/json" -d '{}' \
+  "$PING_URL/reset" --max-time 30 2>"$CURL_OUTPUT" || printf "000")
 
 if [ "$HTTP_CODE" = "200" ]; then
-  pass "Environment is live and responds to /health"
+  pass "HF Space is live and responds to /reset"
+elif [ "$HTTP_CODE" = "000" ]; then
+  fail "HF Space not reachable (connection failed or timed out)"
+  hint "Check your network connection and that the Space is running."
+  hint "Try: curl -s -o /dev/null -w '%%{http_code}' -X POST $PING_URL/reset"
+  stop_at "Step 1"
 else
-  fail "Environment not reachable at $PING_URL (HTTP $HTTP_CODE)"
-  hint "Make sure your server is running (e.g., uvicorn app:app --port 7860)"
+  fail "HF Space /reset returned HTTP $HTTP_CODE (expected 200)"
+  hint "Make sure your Space is running and the URL is correct."
+  hint "Try opening $PING_URL in your browser first."
   stop_at "Step 1"
 fi
 
-# Step 2: Docker Build
 log "${BOLD}Step 2/3: Running docker build${NC} ..."
+
 if ! command -v docker &>/dev/null; then
   fail "docker command not found"
   hint "Install Docker: https://docs.docker.com/get-docker/"
@@ -50,34 +98,51 @@ fi
 
 if [ -f "$REPO_DIR/Dockerfile" ]; then
   DOCKER_CONTEXT="$REPO_DIR"
-  log "  Found Dockerfile in $DOCKER_CONTEXT"
-  if docker build "$DOCKER_CONTEXT" -t code_review_test > /dev/null 2>&1; then
-    pass "Docker build succeeded"
-  else
-    fail "Docker build failed"
-    stop_at "Step 2"
-  fi
+elif [ -f "$REPO_DIR/server/Dockerfile" ]; then
+  DOCKER_CONTEXT="$REPO_DIR/server"
 else
-  fail "No Dockerfile found in repo root"
+  fail "No Dockerfile found in repo root or server/ directory"
   stop_at "Step 2"
 fi
 
-# Step 3: OpenEnv Validate
-log "${BOLD}Step 3/3: Running openenv validate${NC} ..."
-# We check if openenv is installed, if not we try to use a local check or just skip with a warning
-if ! command -v openenv &>/dev/null; then
-  log "${YELLOW}Warning:${NC} openenv command not found. Skipping library-level validation."
-  log "  Please run 'pip install openenv-core' to verify spec compliance."
+log "  Found Dockerfile in $DOCKER_CONTEXT"
+
+BUILD_OK=false
+BUILD_OUTPUT=$(run_with_timeout "$DOCKER_BUILD_TIMEOUT" docker build "$DOCKER_CONTEXT" 2>&1) && BUILD_OK=true
+
+if [ "$BUILD_OK" = true ]; then
+  pass "Docker build succeeded"
 else
-  if (cd "$REPO_DIR" && openenv validate); then
-    pass "openenv validate passed"
-  else
-    fail "openenv validate failed"
-    stop_at "Step 3"
-  fi
+  fail "Docker build failed (timeout=${DOCKER_BUILD_TIMEOUT}s)"
+  printf "%s\n" "$BUILD_OUTPUT" | tail -20
+  stop_at "Step 2"
 fi
 
-printf "\n${GREEN}${BOLD}========================================${NC}\n"
-printf "${GREEN}${BOLD}  All checks passed!${NC}\n"
-printf "${GREEN}${BOLD}  Your submission is ready.${NC}\n"
-printf "${GREEN}${BOLD}========================================${NC}\n\n"
+log "${BOLD}Step 3/3: Running openenv validate${NC} ..."
+
+if ! command -v openenv &>/dev/null; then
+  fail "openenv command not found"
+  hint "Install it: pip install openenv-core"
+  stop_at "Step 3"
+fi
+
+VALIDATE_OK=false
+VALIDATE_OUTPUT=$(cd "$REPO_DIR" && openenv validate 2>&1) && VALIDATE_OK=true
+
+if [ "$VALIDATE_OK" = true ]; then
+  pass "openenv validate passed"
+  [ -n "$VALIDATE_OUTPUT" ] && log "  $VALIDATE_OUTPUT"
+else
+  fail "openenv validate failed"
+  printf "%s\n" "$VALIDATE_OUTPUT"
+  stop_at "Step 3"
+fi
+
+printf "\n"
+printf "${BOLD}========================================${NC}\n"
+printf "${GREEN}${BOLD}  All 3/3 checks passed!${NC}\n"
+printf "${GREEN}${BOLD}  Your submission is ready to submit.${NC}\n"
+printf "${BOLD}========================================${NC}\n"
+printf "\n"
+
+exit 0
