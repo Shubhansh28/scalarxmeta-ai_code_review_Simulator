@@ -47,7 +47,7 @@ def run_domain_benchmark(
         }
 
     # Run agent against each case
-    API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
     MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")
 
