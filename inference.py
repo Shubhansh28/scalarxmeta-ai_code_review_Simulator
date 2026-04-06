@@ -9,11 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Required Environment Variables (Mandatory for Hackathon)
-API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-2-9b-it:free")
-# Prioritize HF_TOKEN as per requirements, fallback to API_KEY or OPENAI_API_KEY
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-HF_TOKEN = OPENROUTER_API_KEY or os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://text.pollinations.ai/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai")
+HF_TOKEN = os.getenv("HF_TOKEN", "any_string_for_pollinations")
 
 # Environment Endpoint
 API_URL = os.getenv("API_URL", "http://localhost:7860")
@@ -67,30 +65,61 @@ async def get_model_message(
                 {"role": "system", "content": "You are a senior engineer auditing code. Precision is key. Output ONLY JSON."},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"},
             temperature=0  # Force deterministic output
         )
         try:
-            return json.loads(response.choices[0].message.content)
-        except (json.JSONDecodeError, TypeError):
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                raise ValueError("Model returned empty content")
+            
+            content = raw_content.strip()
+            # Handle markdown code blocks
+            if "```" in content:
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1:
+                    content = content[start:end+1]
+            
+            # Robust extraction of the first JSON object if multiple exist
+            if content.count("{") > 1 and content.count("}") > 1:
+                # Find the first balanced { } pair
+                stack = 0
+                first_obj_end = -1
+                start_found = False
+                start_idx = -1
+                for i, char in enumerate(content):
+                    if char == "{":
+                        if not start_found:
+                            start_idx = i
+                            start_found = True
+                        stack += 1
+                    elif char == "}":
+                        stack -= 1
+                        if stack == 0 and start_found:
+                            first_obj_end = i
+                            break
+                if start_idx != -1 and first_obj_end != -1:
+                    content = content[start_idx:first_obj_end+1]
+
+            result = json.loads(content)
+            if isinstance(result, list) and len(result) > 0:
+                result = result[0]
+            if not isinstance(result, dict):
+                raise ValueError(f"Expected dict, got {type(result)}")
+            return result
+        except (json.JSONDecodeError, TypeError, Exception) as e:
+            print(f"DEBUG: Failed to parse JSON. Error: {e}. Raw content: {raw_content[:200] if raw_content else 'None'}")
             return {
               "action_type": "comment",
               "file": "unknown",
               "line": 0,
-              "comment": "Parsing error fallback"
+              "comment": f"Fallback due to format error: {str(e)[:50]}"
             }
     except Exception as e:
         return {"action_type": "comment", "file": "unknown", "line": 0, "comment": f"Continuing analysis... (Error: {e})"}
 
 async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
-    client = OpenAI(
-        base_url=API_BASE_URL, 
-        api_key=HF_TOKEN,
-        default_headers={
-            "HTTP-Referer": "https://localhost:7860",
-            "X-Title": "ScalarXMeta Simulator"
-        }
-    )
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     BENCHMARK = "code_review_env"
     TASK_NAME = f"{task_type}_{task_index}"
     MAX_STEPS = 8
@@ -135,6 +164,11 @@ async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
                     "session_id": session_id,
                     "action": action_dict
                 })
+                
+                if resp.status_code != 200:
+                    print(f"DEBUG: Action sent: {json.dumps(action_dict)}")
+                    print(f"DEBUG: Server error {resp.status_code}: {resp.text}")
+                
                 step_result = resp.json()
                 
                 obs = step_result["observation"]

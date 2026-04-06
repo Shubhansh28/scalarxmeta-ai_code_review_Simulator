@@ -157,13 +157,13 @@
     "Age": {
       "keyword": "Age",
       "times_flagged": 0,
-      "times_confirmed": 5,
+      "times_confirmed": 7,
       "times_dismissed": 0,
       "decay_weight": 1.0
     },
     "status_code": {
       "keyword": "status_code",
-      "times_flagged": 5,
+      "times_flagged": 7,
       "times_confirmed": 0,
       "times_dismissed": 0,
       "decay_weight": 1.0,
@@ -180,11 +180,11 @@
     "user_key": {
       "keyword": "user_key",
       "times_flagged": 3,
-      "times_confirmed": 0,
+      "times_confirmed": 1,
       "times_dismissed": 0,
       "decay_weight": 1.0,
-      "accuracy": 0.0
+      "accuracy": 33.3
     }
   },
-  "last_updated": "2026-04-06T20:04:02.498363"
+  "last_updated": "2026-04-06T21:21:42.553406"
 }

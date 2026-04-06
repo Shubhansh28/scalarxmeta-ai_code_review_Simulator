@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "google/gemma-2-9b-it:free")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-HF_TOKEN = OPENROUTER_API_KEY or os.getenv("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://text.pollinations.ai/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai")
+HF_TOKEN = os.getenv("HF_TOKEN", "any_string_for_pollinations")
 
 if not HF_TOKEN or HF_TOKEN == "your_huggingface_token_here":
     raise ValueError("HF_TOKEN or OPENROUTER_API_KEY environment variable is missing or invalid. Please check your .env file.")
@@ -34,14 +33,7 @@ def analyze_pr(pr_data: dict) -> list:
         ...
     ]
     """
-    client = OpenAI(
-        base_url=API_BASE_URL, 
-        api_key=HF_TOKEN,
-        default_headers={
-            "HTTP-Referer": "https://localhost:7860",
-            "X-Title": "ScalarXMeta Simulator"
-        }
-    )
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     
     metadata = pr_data["metadata"]
     files = pr_data["files"]
