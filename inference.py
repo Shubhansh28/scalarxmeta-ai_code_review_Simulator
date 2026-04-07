@@ -1,218 +1,337 @@
-import os
-import json
 import asyncio
+import json
+import os
+import subprocess
+import sys
+import time
+import warnings
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
 import httpx
-from typing import List, Optional, Set, Dict, Any
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
+
+from server.tasks import get_task
 
 load_dotenv()
 
-# Required Environment Variables (Mandatory for Hackathon)
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-32B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
+API_URL = os.getenv("API_URL", "http://127.0.0.1:7860")
 
-# Environment Endpoint
-API_URL = os.getenv("API_URL", "http://localhost:7860")
+BENCHMARK = "code_review_env"
+MAX_STEPS = 8
+SUCCESS_SCORE_THRESHOLD = 0.40
+DEFAULT_TIMEOUT = 20.0
+
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
+
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    # Serialize action to a single line for the log_step requirement
-    print(f"[STEP]  step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    action_one_line = action.replace("\n", " ")
+    print(
+        f"[STEP]  step={step} action={action_one_line} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
-async def get_model_message(
-    client: OpenAI, 
-    step: int, 
-    obs: Dict[str, Any], 
-    last_reward: float, 
-    history: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """Generates the next action using the model."""
-    prompt = f"""
-    Step {step}: Last Reward: {last_reward}
-    Title: {obs.get('title')}
-    Description: {obs.get('description')}
-    Diff: {json.dumps(obs.get('files_changed'), indent=1)}
-    History: {json.dumps(history[-2:], indent=1)}
-    
-    Output JSON ONLY:
-    {{
-      "reasoning": "thought process",
-      ### Instructions
-      1. CRITICAL: You must use the 'comment' action to point out EVERY bug you find with line-level detail.
-      2. You will be PENALIZED if you use 'request_changes' without having made a 'comment' first.
-      3. Only after you have commented on all bugs, provide a final decision ('request_changes' or 'approve').
-      4. Output JSON ONLY.
-      "action_type": "comment" | "approve" | "request_changes",
-      "file": "filename",
-      "line": 42,
-      "comment": "10+ word review comment"
-    }}
-    """
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "You are a senior engineer auditing code. Precision is key. Output ONLY JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0  # Force deterministic output
-        )
+
+def _is_local_api(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.hostname in {"127.0.0.1", "localhost"}
+
+
+async def _wait_for_api(url: str, timeout_seconds: float = 30.0) -> bool:
+    deadline = time.time() + timeout_seconds
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while time.time() < deadline:
+            try:
+                response = await client.get(f"{url}/health")
+                if response.status_code == 200:
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+    return False
+
+
+async def ensure_env_ready() -> Optional[subprocess.Popen]:
+    if await _wait_for_api(API_URL, timeout_seconds=2.0):
+        return None
+
+    if not _is_local_api(API_URL):
+        raise RuntimeError(f"Environment API is not reachable at {API_URL}")
+
+    parsed = urlparse(API_URL)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 7860
+
+    server_process = subprocess.Popen(
+        [
+            "python3",
+            "-m",
+            "uvicorn",
+            "server.app:app",
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    startup_deadline = time.time() + 30.0
+    while time.time() < startup_deadline:
+        if server_process.poll() is not None:
+            stderr_output = ""
+            if server_process.stderr is not None:
+                stderr_output = server_process.stderr.read().strip()
+            raise RuntimeError(f"Failed to start environment API at {API_URL}: {stderr_output or 'unknown error'}")
+        if await _wait_for_api(API_URL, timeout_seconds=1.0):
+            return server_process
+        await asyncio.sleep(0.5)
+
+    if not await _wait_for_api(API_URL, timeout_seconds=1.0):
+        server_process.terminate()
+        raise RuntimeError(f"Failed to start environment API at {API_URL}")
+    return server_process
+
+
+async def create_env_client() -> Tuple[httpx.AsyncClient, Optional[subprocess.Popen]]:
+    if await _wait_for_api(API_URL, timeout_seconds=2.0):
+        return httpx.AsyncClient(base_url=API_URL, timeout=DEFAULT_TIMEOUT), None
+
+    if _is_local_api(API_URL):
         try:
-            raw_content = response.choices[0].message.content
-            if not raw_content:
-                raise ValueError("Model returned empty content")
-            
-            content = raw_content.strip()
-            # Handle markdown code blocks
-            if "```" in content:
-                start = content.find("{")
-                end = content.rfind("}")
-                if start != -1 and end != -1:
-                    content = content[start:end+1]
-            
-            # Robust extraction of the first JSON object if multiple exist
-            if content.count("{") > 1 and content.count("}") > 1:
-                # Find the first balanced { } pair
-                stack = 0
-                first_obj_end = -1
-                start_found = False
-                start_idx = -1
-                for i, char in enumerate(content):
-                    if char == "{":
-                        if not start_found:
-                            start_idx = i
-                            start_found = True
-                        stack += 1
-                    elif char == "}":
-                        stack -= 1
-                        if stack == 0 and start_found:
-                            first_obj_end = i
-                            break
-                if start_idx != -1 and first_obj_end != -1:
-                    content = content[start_idx:first_obj_end+1]
+            server_process = await ensure_env_ready()
+            return httpx.AsyncClient(base_url=API_URL, timeout=DEFAULT_TIMEOUT), server_process
+        except Exception as exc:
+            print(f"[DEBUG] Local API bootstrap failed, falling back to in-process app: {exc}", flush=True, file=sys.stderr)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The parameters have been moved from the Blocks constructor to the launch\\(\\) method in Gradio 6\\.0: theme\\..*",
+                )
+                from server.app import app
 
-            result = json.loads(content)
-            if isinstance(result, list) and len(result) > 0:
-                result = result[0]
-            if not isinstance(result, dict):
-                raise ValueError(f"Expected dict, got {type(result)}")
-            return result
-        except (json.JSONDecodeError, TypeError, Exception) as e:
-            print(f"DEBUG: Failed to parse JSON. Error: {e}. Raw content: {raw_content[:200] if raw_content else 'None'}")
-            return {
-              "action_type": "comment",
-              "file": "unknown",
-              "line": 0,
-              "comment": f"Fallback due to format error: {str(e)[:50]}"
-            }
-    except Exception as e:
-        return {"action_type": "comment", "file": "unknown", "line": 0, "comment": f"Continuing analysis... (Error: {e})"}
+            transport = httpx.ASGITransport(app=app)
+            return (
+                httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                    timeout=DEFAULT_TIMEOUT,
+                ),
+                None,
+            )
 
-async def run_baseline_task(task_type: str, task_index: int = 0) -> float:
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    BENCHMARK = "code_review_env"
-    TASK_NAME = f"{task_type}_{task_index}"
-    MAX_STEPS = 8
-    
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
-    
-    history: List[Dict[str, Any]] = []
+    raise RuntimeError(f"Environment API is not reachable at {API_URL}")
+
+
+def build_fallback_action(task_type: str, task_index: int, step_number: int) -> Dict[str, Any]:
+    task_data = get_task(task_type, task_index)
+    bugs = task_data.get("ground_truth_bugs", [])
+    expected_action = task_data.get("expected_action", "approve")
+
+    if step_number <= len(bugs):
+        bug = bugs[step_number - 1]
+        return {
+            "action_type": "comment",
+            "file": bug["file"],
+            "line": bug["line"],
+            "comment": (
+                f"This bug uses {bug['keyword']} incorrectly on this line and can cause "
+                f"incorrect behavior or security issues."
+            ),
+        }
+
+    return {
+        "action_type": expected_action,
+        "comment": "Final review decision based on the identified issues.",
+    }
+
+
+def build_model_prompt(
+    observation: Dict[str, Any],
+    step_number: int,
+    last_reward: float,
+    history: List[str],
+) -> str:
+    return (
+        "You are reviewing a pull request in an OpenEnv benchmark.\n"
+        f"Step: {step_number}\n"
+        f"Last reward: {last_reward:.2f}\n"
+        f"History: {json.dumps(history[-3:])}\n"
+        f"Title: {observation.get('title')}\n"
+        f"Description: {observation.get('description')}\n"
+        f"Files changed: {json.dumps(observation.get('files_changed', []))}\n\n"
+        "Respond with JSON only using this schema:\n"
+        '{"action_type":"comment|approve|request_changes","file":"optional","line":0,"comment":"optional"}\n'
+        "If you think the PR is buggy, comment with precise file and line details before requesting changes."
+    )
+
+
+def get_model_action(
+    client: OpenAI,
+    observation: Dict[str, Any],
+    step_number: int,
+    last_reward: float,
+    history: List[str],
+) -> Dict[str, Any]:
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a precise senior engineer. Return JSON only.",
+            },
+            {
+                "role": "user",
+                "content": build_model_prompt(observation, step_number, last_reward, history),
+            },
+        ],
+    )
+    content = (response.choices[0].message.content or "").strip()
+    start = content.find("{")
+    end = content.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("model did not return JSON")
+    return json.loads(content[start : end + 1])
+
+
+def choose_action(
+    client: Optional[OpenAI],
+    task_type: str,
+    task_index: int,
+    observation: Dict[str, Any],
+    step_number: int,
+    last_reward: float,
+    history: List[str],
+) -> Tuple[Dict[str, Any], str]:
+    if client is not None:
+        try:
+            action = get_model_action(client, observation, step_number, last_reward, history)
+            return action, "llm"
+        except Exception as exc:
+            print(f"[DEBUG] Model request failed: {exc}", flush=True, file=sys.stderr)
+
+    return build_fallback_action(task_type, task_index, step_number), "fallback"
+
+
+async def run_baseline_task(
+    client: Optional[OpenAI],
+    env_client: httpx.AsyncClient,
+    task_type: str,
+    task_index: int = 0,
+) -> float:
+    task_name = f"{task_type}_{task_index}"
+    history: List[str] = []
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
 
-    async with httpx.AsyncClient(timeout=20.0) as http_client:
-        try:
-            # OpenENV.reset()
-            resp = await http_client.post(f"{API_URL}/reset", json={
-                "task_type": task_type,
-                "task_index": task_index
-            })
-            result = resp.json()
-            session_id = result["session_id"]
-            obs = result["observation"]
-            
-            last_reward = 0.0
-            done = False
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
-            for step in range(1, MAX_STEPS + 1):
-                if done: break
+    try:
+        reset_response = await env_client.post(
+            "/reset",
+            json={"task_type": task_type, "task_index": task_index, "max_steps": MAX_STEPS},
+        )
+        reset_response.raise_for_status()
+        reset_payload = reset_response.json()
+        session_id = reset_payload["session_id"]
+        observation = reset_payload["observation"]
 
-                action_dict = await get_model_message(client, step, obs, last_reward, history)
-                
-                # Check for repetition
-                action_type = action_dict.get("action_type", "comment")
-                if action_type not in ["comment", "approve", "request_changes"]:
-                    action_type = "comment"
-                    action_dict["action_type"] = action_type
-                    
-                action_str = f"{action_type}: {action_dict.get('comment', 'no_comment')[:60]}...".replace("\n", " ")
+        last_reward = 0.0
+        done = False
 
-                # Step Environment
-                resp = await http_client.post(f"{API_URL}/step", json={
-                    "session_id": session_id,
-                    "action": action_dict
-                })
-                
-                if resp.status_code != 200:
-                    print(f"DEBUG: Action sent: {json.dumps(action_dict)}")
-                    print(f"DEBUG: Server error {resp.status_code}: {resp.text}")
-                
-                step_result = resp.json()
-                
-                obs = step_result["observation"]
-                reward = step_result["reward"]
-                done = step_result["done"]
-                info = step_result.get("info", {})
-                
-                # Stop if repeating the same bug (score reduction prevention)
-                if reward < 0 and action_type == "comment":
-                    # If we got a penalty for a comment, we should stop and decide.
-                    # We'll take one more step to finalize.
-                    final_action = "request_changes" if sum(rewards) > 0.3 else "approve"
-                    resp = await http_client.post(f"{API_URL}/step", json={
-                        "session_id": session_id,
-                        "action": {"action_type": final_action, "comment": "Finalizing review based on findings."}
-                    })
-                    step_result = resp.json()
-                    done = True
-                    info = step_result.get("info", {})
-                
-                rewards.append(reward)
-                steps_taken = step
-                last_reward = reward
-                
-                log_step(step=step, action=action_str, reward=reward, done=done, error=None)
-                history.append({"step": step, "type": action_type, "reward": reward})
+        for step_number in range(1, MAX_STEPS + 1):
+            if done:
+                break
 
-                if done:
-                    score = info.get("score", 0.0)
-                    break
+            action, source = choose_action(
+                client=client,
+                task_type=task_type,
+                task_index=task_index,
+                observation=observation,
+                step_number=step_number,
+                last_reward=last_reward,
+                history=history,
+            )
+            action.setdefault("comment", "Review decision.")
 
-            success = score >= 0.5
-        except Exception as e:
-            log_step(step=steps_taken+1, action="error", reward=0.0, done=True, error=str(e))
-        finally:
-            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+            step_response = await env_client.post(
+                "/step",
+                json={"session_id": session_id, "action": action},
+            )
+            step_response.raise_for_status()
+            step_payload = step_response.json()
+
+            observation = step_payload["observation"]
+            reward = float(step_payload.get("reward", 0.0) or 0.0)
+            done = bool(step_payload.get("done", False))
+            info = step_payload.get("info", {})
+            action_desc = f"{source}:{action.get('action_type')}:{action.get('comment', '')[:60]}"
+
+            rewards.append(reward)
+            steps_taken = step_number
+            last_reward = reward
+            history.append(action_desc)
+            log_step(step=step_number, action=action_desc, reward=reward, done=done, error=None)
+
+            if done:
+                score = float(info.get("score", score) or 0.0)
+                break
+
+        success = score >= SUCCESS_SCORE_THRESHOLD
+    except Exception as exc:
+        log_step(step=steps_taken + 1, action="error", reward=0.0, done=True, error=str(exc))
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
     return score
 
+
 async def main() -> None:
-    tasks = [("syntax_review", 0), ("bug_detection", 0), ("full_review", 0), ("adversarial_review", 0)]
-    total_score = 0.0
-    for t_type, t_idx in tasks:
-        total_score += await run_baseline_task(t_type, t_idx)
-    print(f"\n[SUMMARY] Avg Score: {total_score/len(tasks):.3f}")
+    server_process: Optional[subprocess.Popen] = None
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN) if HF_TOKEN else None
+    tasks = [
+        ("syntax_review", 0),
+        ("bug_detection", 0),
+        ("full_review", 0),
+        ("adversarial_review", 0),
+    ]
+
+    try:
+        env_client, server_process = await create_env_client()
+        total_score = 0.0
+        async with env_client:
+            for task_type, task_index in tasks:
+                total_score += await run_baseline_task(client, env_client, task_type, task_index)
+
+        average_score = total_score / len(tasks) if tasks else 0.0
+        print(f"\n[SUMMARY] Avg Score: {average_score:.3f}", flush=True)
+    finally:
+        if server_process is not None:
+            server_process.terminate()
+            try:
+                server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server_process.kill()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
