@@ -22,7 +22,7 @@ class CodeReviewEnv:
         self.actions_history = []
         self.bugs_identified = set()
         self.done = False
-        self.total_score = 0.01
+        self.total_score = 0.0
         self.last_action_feedback = "Environment initialized. Awaiting review."
         return self.state()
 
@@ -60,7 +60,7 @@ class CodeReviewEnv:
             self.total_score += penalty
             
             # Final clamping for the official (0, 1) range
-            self.total_score = max(0.01, min(0.99, self.total_score))
+            self.total_score = max(0.0, min(1.0, self.total_score))
             info = Info(done=True, score=self.total_score, message="Episode completed")
 
             # Record benchmark result to flywheel store if available

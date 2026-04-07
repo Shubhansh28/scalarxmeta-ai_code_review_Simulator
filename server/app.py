@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 import uuid
+import time
 import gradio as gr
 
 from .environment import CodeReviewEnv
-from .models import Action, Observation, DeveloperSignal
+from .models import Action, Observation, Reward, DeveloperSignal
 from .flywheel_store import FlywheelStore
 from .feedback_bridge import capture_developer_signal
 from .confidence_engine import run_domain_benchmark, annotate_comments
@@ -14,8 +15,18 @@ from .gradio_ui import create_demo
 app = FastAPI(title="ScalarX Meta — Self-Learning Flywheel")
 
 # Shared state
-sessions: Dict[str, CodeReviewEnv] = {}
+# Sessions stored as {session_id: (env, created_at_timestamp)}
+SESSION_TTL_SECONDS = 1800  # 30 minutes — prevents memory leaks on 8GB machines
+sessions: Dict[str, tuple] = {}
 flywheel_store = FlywheelStore()
+
+
+def _cleanup_stale_sessions():
+    """Remove sessions older than SESSION_TTL_SECONDS."""
+    now = time.time()
+    stale = [sid for sid, (_, ts) in sessions.items() if now - ts > SESSION_TTL_SECONDS]
+    for sid in stale:
+        del sessions[sid]
 
 
 # ── Existing Environment Endpoints ───────────────────────────
@@ -38,6 +49,7 @@ class CustomResetRequest(BaseModel):
 
 @app.post("/reset")
 def reset_env(req: Optional[ResetRequest] = Body(None)):
+    _cleanup_stale_sessions()  # Prevent memory leaks
     if req is None:
         req = ResetRequest()
         
@@ -48,7 +60,7 @@ def reset_env(req: Optional[ResetRequest] = Body(None)):
         flywheel_store=flywheel_store,
     )
     session_id = str(uuid.uuid4())
-    sessions[session_id] = env
+    sessions[session_id] = (env, time.time())
     
     obs = env.state()
     return {
@@ -58,6 +70,7 @@ def reset_env(req: Optional[ResetRequest] = Body(None)):
 
 @app.post("/reset/custom")
 def reset_env_custom(req: CustomResetRequest):
+    _cleanup_stale_sessions()
     custom_data = req.dict()
     env = CodeReviewEnv(
         task_type="custom",
@@ -66,7 +79,7 @@ def reset_env_custom(req: CustomResetRequest):
         flywheel_store=flywheel_store,
     )
     session_id = str(uuid.uuid4())
-    sessions[session_id] = env
+    sessions[session_id] = (env, time.time())
     
     obs = env.state()
     return {
@@ -79,25 +92,37 @@ def step_env(req: StepRequest):
     if req.session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    env = sessions[req.session_id]
+    env, _ = sessions[req.session_id]
     obs, reward, done, info = env.step(req.action)
+    
+    # Clamp reward to [0.0, 1.0] per OpenEnv spec before returning
+    reward_clamped = float(max(0.0, min(1.0, reward)))
     
     return {
         "observation": obs.dict(),
-        "reward": reward,
+        "reward": reward_clamped,
         "done": done,
         "info": info.dict()
     }
 
+class StateRequest(BaseModel):
+    session_id: str
+
 @app.get("/state")
 def get_state(session_id: str):
+    """GET /state?session_id=... for quick status checks."""
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-        
-    env = sessions[session_id]
-    return {
-        "observation": env.state().dict()
-    }
+    env, _ = sessions[session_id]
+    return {"observation": env.state().dict()}
+
+@app.post("/state")
+def post_state(req: StateRequest):
+    """POST /state per OpenEnv interface spec."""
+    if req.session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    env, _ = sessions[req.session_id]
+    return {"observation": env.state().dict()}
 
 @app.get("/health")
 def health_check():

@@ -1,29 +1,125 @@
 name: code_review_env
 version: "1.0.0"
-description: Simulates software pull request review workflows with adversarial challenges.
+description: >
+  Simulates real-world software pull request review workflows.
+  An AI agent reads unified diffs, identifies bugs, and approves or
+  requests changes — with partial rewards at each step.
+author: scalarxmeta
+tags:
+  - openenv
+  - code-review
+  - software-engineering
+  - adversarial
 
 entrypoint:
   command: uvicorn server.app:app --host 0.0.0.0 --port 7860
 
 interface:
+  base_url: http://localhost:7860
   endpoints:
     reset: /reset
     step: /step
+    state: /state
+    health: /health
+
+observation_space:
+  type: object
+  description: >
+    The agent receives the current PR context including metadata,
+    unified diffs, comment history, step budget, and last-action feedback.
+  properties:
+    pr_id:
+      type: string
+      description: Unique identifier for the pull request.
+    title:
+      type: string
+      description: Title of the pull request.
+    description:
+      type: string
+      description: Author's description of the PR.
+    files_changed:
+      type: array
+      description: List of changed files with unified diffs.
+      items:
+        type: object
+        properties:
+          filename:
+            type: string
+          diff:
+            type: string
+    comments_history:
+      type: array
+      description: History of agent comments in this episode.
+      items:
+        type: string
+    step_count:
+      type: integer
+      description: Current step in the episode.
+    max_steps:
+      type: integer
+      description: Maximum allowed steps per episode.
+    last_action_feedback:
+      type: string
+      description: Feedback from the environment on the last action taken.
+
+action_space:
+  type: object
+  description: >
+    The agent must choose one of three action types per step.
+  properties:
+    action_type:
+      type: string
+      enum: [comment, approve, request_changes]
+      description: >
+        comment — Add inline feedback on a specific file/line.
+        approve — Accept the PR as-is (ends episode).
+        request_changes — Reject the PR due to identified defects (ends episode).
+    file:
+      type: string
+      description: Filename to comment on (required for comment action).
+    line:
+      type: integer
+      description: Line number of the issue (required for full credit).
+    comment:
+      type: string
+      description: Review comment text (minimum 5 words for scoring).
 
 tasks:
   - id: syntax_review
     name: Syntax & Style Review
-    description: Detect basic syntax errors and naming convention violations.
+    description: >
+      Detect basic syntax errors and naming convention violations in
+      single-file diffs. Some PRs are clean and should be approved.
     difficulty: easy
+    max_steps: 8
+    reward_range: [0.0, 1.0]
+
   - id: bug_detection
     name: Bug Detection
-    description: Identify logical flaws and off-by-one errors.
+    description: >
+      Identify logical flaws, off-by-one errors, and missing return values.
+      Agent must distinguish between buggy PRs (request_changes) and
+      correct refactors (approve).
     difficulty: medium
+    max_steps: 8
+    reward_range: [0.0, 1.0]
+
   - id: full_review
     name: Full Architectural Review
-    description: Complex multi-file dependencies and logic regressions.
+    description: >
+      Multi-file PRs with complex bugs: cache key collisions, race conditions,
+      and memory leaks embedded in otherwise reasonable-looking code.
+      Frontier-model difficulty.
     difficulty: hard
+    max_steps: 8
+    reward_range: [0.0, 1.0]
+
   - id: adversarial_review
     name: Adversarial Security Review
-    description: Audit deceptive code designed to bypass basic static analysis.
+    description: >
+      Deceptive code designed to bypass basic static analysis — misleading
+      comments, SHA-256 claimed but MD5 used, always-True auth checks.
+      Expert difficulty.
     difficulty: expert
+    max_steps: 8
+    reward_range: [0.0, 1.0]
