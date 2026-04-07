@@ -31,7 +31,7 @@ SEED_CASES = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "logic", "file": "pipeline.py", "keyword": "results=[]"}
+            {"type": "logic", "file": "pipeline.py", "keyword": "mutable"}
         ],
         "expected_action": "request_changes",
         "source": "seed",

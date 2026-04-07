@@ -6,3 +6,4 @@ __pycache__/
 .brain/
 .gemini/
 node_modules/
+flywheel_store.json
