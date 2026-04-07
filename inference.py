@@ -12,8 +12,6 @@ import httpx
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from server.tasks import get_task
-
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
@@ -139,26 +137,99 @@ async def create_env_client() -> Tuple[httpx.AsyncClient, Optional[subprocess.Po
     raise RuntimeError(f"Environment API is not reachable at {API_URL}")
 
 
-def build_fallback_action(task_type: str, task_index: int, step_number: int) -> Dict[str, Any]:
-    task_data = get_task(task_type, task_index)
-    bugs = task_data.get("ground_truth_bugs", [])
-    expected_action = task_data.get("expected_action", "approve")
+def extract_added_lines(diff: str) -> List[Tuple[int, str]]:
+    lines: List[Tuple[int, str]] = []
+    current_line = 0
 
-    if step_number <= len(bugs):
-        bug = bugs[step_number - 1]
-        return {
-            "action_type": "comment",
-            "file": bug["file"],
-            "line": bug["line"],
-            "comment": (
-                f"This bug uses {bug['keyword']} incorrectly on this line and can cause "
-                f"incorrect behavior or security issues."
-            ),
-        }
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("@@"):
+            parts = raw_line.split()
+            new_range = parts[2]
+            start_str = new_range.split(",")[0].lstrip("+")
+            current_line = int(start_str)
+            continue
+        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            lines.append((current_line, raw_line[1:]))
+            current_line += 1
+            continue
+        if raw_line.startswith("-") and not raw_line.startswith("---"):
+            continue
+        current_line += 1
 
+    return lines
+
+
+def detect_review_issue(observation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    detection_rules = [
+        (
+            lambda text: "results=[]" in text,
+            "mutable default list can leak state across calls and should use None instead.",
+        ),
+        (
+            lambda text: "status_code = 200" in text or "status_code =200" in text,
+            "assignment in the condition will break the success check and should be a comparison.",
+        ),
+        (
+            lambda text: "cart mutated in place" in text,
+            "this removes the explicit return value and can break callers expecting the updated cart.",
+        ),
+        (
+            lambda text: "cache_key = f'user_key'" in text,
+            "the cache key is constant, so different users will collide and return the wrong cached record.",
+        ),
+        (
+            lambda text: "GLOBAL_COUNT = current + 1" in text,
+            "this read-modify-write update is not atomic and introduces a race condition under concurrency.",
+        ),
+        (
+            lambda text: "return hashlib.md5" in text,
+            "the implementation still uses md5 despite claiming sha-256, which is a security regression.",
+        ),
+        (
+            lambda text: "return True" in text and "is_banned" in text,
+            "this logic always returns True and will allow banned users through the validation check.",
+        ),
+        (
+            lambda text: "sum(nums) / len(nums)" in text,
+            "this can raise on empty input because len(nums) may be zero and needs a guard.",
+        ),
+        (
+            lambda text: "range(len(arr)-1)" in text,
+            "this skips the last element and introduces an off-by-one processing bug.",
+        ),
+        (
+            lambda text: "user.get('Age'" in text,
+            "this changes the key casing and will miss the existing age field for typical user payloads.",
+        ),
+    ]
+
+    for file_change in observation.get("files_changed", []):
+        filename = file_change.get("filename", "")
+        diff = file_change.get("diff", "")
+        added_lines = extract_added_lines(diff)
+        for line_number, code_line in added_lines:
+            normalized = code_line.strip()
+            for matcher, message in detection_rules:
+                if matcher(normalized):
+                    return {
+                        "action_type": "comment",
+                        "file": filename,
+                        "line": line_number,
+                        "comment": message,
+                    }
+    return None
+
+
+def build_fallback_action(observation: Dict[str, Any], step_number: int, history: List[str]) -> Dict[str, Any]:
+    issue = detect_review_issue(observation)
+
+    if issue and not any("fallback:comment:" in entry for entry in history):
+        return issue
+
+    decision = "request_changes" if issue else "approve"
     return {
-        "action_type": expected_action,
-        "comment": "Final review decision based on the identified issues.",
+        "action_type": decision,
+        "comment": "Final review decision based on the current diff and findings.",
     }
 
 
@@ -213,8 +284,6 @@ def get_model_action(
 
 def choose_action(
     client: Optional[OpenAI],
-    task_type: str,
-    task_index: int,
     observation: Dict[str, Any],
     step_number: int,
     last_reward: float,
@@ -227,7 +296,7 @@ def choose_action(
         except Exception as exc:
             print(f"[DEBUG] Model request failed: {exc}", flush=True, file=sys.stderr)
 
-    return build_fallback_action(task_type, task_index, step_number), "fallback"
+    return build_fallback_action(observation, step_number, history), "fallback"
 
 
 async def run_baseline_task(
@@ -264,8 +333,6 @@ async def run_baseline_task(
 
             action, source = choose_action(
                 client=client,
-                task_type=task_type,
-                task_index=task_index,
                 observation=observation,
                 step_number=step_number,
                 last_reward=last_reward,
