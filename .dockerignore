@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.git/
+.env
+.brain/
+.artifacts/
+.gemini/
+.DS_Store
+flywheel_store.json
+node_modules/
+venv/
+.venv/
