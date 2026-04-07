@@ -92,15 +92,26 @@ Output ONLY this JSON structure:
 }}
 """
 
-    # Fallback models for Hugging Face Serverless tier
-    models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"]
+    # Priority Tier 1: Hugging Face (Best Quality)
+    # Priority Tier 2: Pollinations AI (Unlimited Backup)
+    
+    hf_client = client
+    pollinations_client = OpenAI(base_url="https://text.pollinations.ai/openai", api_key="not-needed")
+    
+    # Models verified as stable
+    # Tier 1 Models (HF)
+    hf_models = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct"]
+    # Tier 2 Models (Pollinations)
+    poll_models = ["openai", "qwen"]
+
     retries_per_model = 2
     last_error = None
     
-    for model in models_to_try:
+    # Attempt Tier 1 (Hugging Face)
+    for model in hf_models:
         for attempt in range(retries_per_model):
             try:
-                response = client.chat.completions.create(
+                response = hf_client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
@@ -110,50 +121,68 @@ Output ONLY this JSON structure:
                     max_tokens=2500,
                     timeout=120
                 )
-                
-                raw_content = response.choices[0].message.content
-                if not raw_content:
-                    raise ValueError(f"Model {model} returned empty content")
-
-                content = raw_content.strip()
-                # Robust extraction of the first JSON object
-                if "{" in content and "}" in content:
-                    start_idx = content.find("{")
-                    stack = 0
-                    first_obj_end = -1
-                    for i in range(start_idx, len(content)):
-                        if content[i] == "{":
-                            stack += 1
-                        elif content[i] == "}":
-                            stack -= 1
-                            if stack == 0:
-                                first_obj_end = i
-                                break
-                    if first_obj_end != -1:
-                        content = content[start_idx:first_obj_end+1]
-
-                result = json.loads(content)
-                return result
+                return parse_json_response(response, model)
             except Exception as e:
                 last_error = e
-                logger.warning(f"AI analysis with {model} (attempt {attempt+1}) failed: {e}")
-                # Handle model loading (503)
-                if "503" in str(e) or "loading" in str(e).lower():
-                    import time
-                    time.sleep(15) # Long wait for model load
-                    continue
+                logger.warning(f"HF model {model} failed: {e}")
+                if "402" in str(e) or "credits" in str(e).lower():
+                    break # Skip to next tier if credits gone
                 if attempt < retries_per_model - 1:
                     import time
                     time.sleep(2)
-                    continue
-        
-        logger.info(f"Model {model} failed, trying next fallback...")
 
-    # If all fallbacks fail
-    logger.error(f"AI analysis failed for all models: {last_error}")
+    # Attempt Tier 2 (Pollinations AI - Unlimited Backup)
+    logger.info("HF Tier failed or depleted. Falling back to Pollinations Tier...")
+    for model in poll_models:
+        try:
+            response = pollinations_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=2500,
+                timeout=90
+            )
+            return parse_json_response(response, f"poll:{model}")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Pollinations model {model} failed: {e}")
+
+    # Final Fallback: Structural Failure Result
+    logger.error(f"Global AI analysis failed: {last_error}")
     return {
-        "comments": [{"file": "system", "severity": "error", "comment": f"AI analysis failed across multiple models ({str(last_error)}). Please try again in a few minutes."}],
+        "comments": [{"file": "system", "severity": "error", "comment": f"AI analysis failed across all tiers. Error: {str(last_error)}. Please try again later."}],
         "overall_verdict": "request_changes",
-        "verdict_reason": f"Analysis could not be completed after several attempts: {str(last_error)}",
+        "verdict_reason": f"System could not complete analysis after tiered retries.",
         "merge_conflicts_found": False
     }
+
+
+def parse_json_response(response, model_name: str) -> dict:
+    """Helper to safely parse JSON from model responses."""
+    raw_content = response.choices[0].message.content
+    if not raw_content:
+        raise ValueError(f"Model {model_name} returned empty content")
+
+    content = raw_content.strip()
+    # Robust extraction of the first JSON object
+    if "{" in content and "}" in content:
+        start_idx = content.find("{")
+        stack = 0
+        first_obj_end = -1
+        for i in range(start_idx, len(content)):
+            if content[i] == "{":
+                stack += 1
+            elif content[i] == "}":
+                stack -= 1
+                if stack == 0:
+                    first_obj_end = i
+                    break
+        if first_obj_end != -1:
+            content = content[start_idx:first_obj_end+1]
+
+    result = json.loads(content)
+    logger.info(f"Successful analysis using {model_name}")
+    return result

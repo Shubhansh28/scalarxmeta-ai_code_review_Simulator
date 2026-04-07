@@ -104,15 +104,22 @@ Output ONLY this JSON:
   "final_decision": "approve" | "request_changes"
 }}"""
 
-            # Fallback models for benchmark
-            models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"]
-            retries_per_model = 2
-            ai_plan = None
+            # Priority Tiers for Simulations
+            hf_models = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct"]
+            poll_models = ["openai", "qwen"]
             
-            for model in models_to_try:
+            hf_client = client
+            poll_client = OpenAI(base_url="https://text.pollinations.ai/openai", api_key="not-needed")
+            
+            ai_plan = None
+            last_error = None
+            retries_per_model = 2
+
+            # Tier 1: Hugging Face (Best Quality)
+            for model in hf_models:
                 for attempt in range(retries_per_model):
                     try:
-                        response = client.chat.completions.create(
+                        response = hf_client.chat.completions.create(
                             model=model,
                             messages=[
                                 {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
@@ -124,9 +131,8 @@ Output ONLY this JSON:
                         )
                         
                         raw_content = response.choices[0].message.content
-                        if not raw_content:
-                            raise ValueError("Empty content")
-
+                        if not raw_content: raise ValueError("Empty")
+                        
                         content = raw_content.strip()
                         if "{" in content and "}" in content:
                             start_idx = content.find("{")
@@ -140,19 +146,47 @@ Output ONLY this JSON:
                                         end_idx = i
                                         break
                             if end_idx != -1:
-                                content = content[start_idx:end_idx+1]
-                        
-                        ai_plan = json.loads(content)
-                        break
+                                ai_plan = json.loads(content[start_idx:end_idx+1])
+                                break
                     except Exception as e:
-                        if "503" in str(e) or "loading" in str(e).lower():
-                            import time
-                            time.sleep(15)
-                            continue
-                        if attempt < retries_per_model - 1:
-                            import time
-                            time.sleep(2)
-                            continue
+                        last_error = e
+                        if "402" in str(e) or "credits" in str(e).lower(): break # Skip to next tier
+                if ai_plan: break
+
+            # Tier 2 Fallback: Pollinations AI (Unlimited Backup)
+            if not ai_plan:
+                for model in poll_models:
+                    try:
+                        response = poll_client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": "You are a code reviewer. Output ONLY valid JSON."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            temperature=0.1,
+                            max_tokens=800,
+                            timeout=60
+                        )
+                        raw_content = response.choices[0].message.content
+                        if not raw_content: continue
+                        
+                        content = raw_content.strip()
+                        if "{" in content and "}" in content:
+                            start_idx = content.find("{")
+                            stack = 0
+                            end_idx = -1
+                            for i in range(start_idx, len(content)):
+                                if content[i] == "{": stack += 1
+                                elif content[i] == "}":
+                                    stack -= 1
+                                    if stack == 0:
+                                        end_idx = i
+                                        break
+                            if end_idx != -1:
+                                ai_plan = json.loads(content[start_idx:end_idx+1])
+                                break
+                    except Exception as e:
+                        last_error = e
                 if ai_plan: break
             
             if not ai_plan:
