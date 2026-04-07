@@ -105,7 +105,7 @@ Output ONLY this JSON:
 }}"""
 
             # Fallback models for benchmark
-            models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
+            models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"]
             retries_per_model = 2
             ai_plan = None
             

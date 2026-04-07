@@ -93,7 +93,7 @@ Output ONLY this JSON structure:
 """
 
     # Fallback models for Hugging Face Serverless tier
-    models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"]
+    models_to_try = [MODEL_NAME, "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"]
     retries_per_model = 2
     last_error = None
     
