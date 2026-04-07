@@ -25,7 +25,7 @@ print("--- Starting Grader Precision Tests ---")
 # 1. Perfect Match (Keyword + Line)
 test_case("Perfect Match", 
           {"action_type": "comment", "file": "profiles.py", "line": 12, "comment": "The variable 'Age' has incorrect casing."}, 
-          0.70)
+          0.60)
 
 # 2. Correct Keyword, Wrong Line
 test_case("Keyword Only", 
@@ -45,6 +45,6 @@ test_case("False Positive",
 # 5. Correct Keyword + Line + Explanation Bonus
 test_case("Perfect Match with Bonus", 
           {"action_type": "comment", "file": "profiles.py", "line": 12, "comment": "The variable 'Age' has a bug and fails to compile."}, 
-          0.70)
+          0.60)
 
 print("\n--- All Precision Tests Passed! ---")

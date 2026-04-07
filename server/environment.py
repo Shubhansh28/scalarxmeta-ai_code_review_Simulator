@@ -38,7 +38,7 @@ class CodeReviewEnv:
         self.bugs_identified.update(new_bugs)
         
         step_reward -= 0.05 # Step penalty
-        step_reward = max(0.01, min(0.99, step_reward))
+        # No clamping here to allow negative rewards to propagate
         
         if action.action_type == "comment":
             self.comments_history.append(f"[{action.file}:{action.line}] {action.comment}")

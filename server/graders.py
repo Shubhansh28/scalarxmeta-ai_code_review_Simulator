@@ -12,7 +12,7 @@ def evaluate_step(task_data: Dict[str, Any], action: Any, identified_bugs: Set[i
     Evaluates a single action and returns (reward, newly_identified_bug_indices).
     
     Rules:
-    - Correct bug detection (Keyword + Line): +0.6 (Full Precision)
+    - Correct bug detection (Keyword + Line): +0.4 (Full Precision)
     - Correct keyword but wrong/missing line: +0.2 (Partial progress)
     - Correct line but wrong/missing keyword: +0.1 (Right location, wrong diagnosis)
     - False positive: -0.3
@@ -56,7 +56,7 @@ def evaluate_step(task_data: Dict[str, Any], action: Any, identified_bugs: Set[i
             
             if keyword_match and line_match:
                 hit_idx = i
-                reward += 0.6 # Full credit for precision
+                reward += 0.4 # Full credit for precision
                 break
             elif keyword_match:
                 # Found the keyword but missed the line or file
@@ -77,7 +77,7 @@ def evaluate_step(task_data: Dict[str, Any], action: Any, identified_bugs: Set[i
             new_bugs.add(hit_idx)
             # 4. Explanation Bonus
             if any(kw in comment_lower for kw in EXPLANATION_KEYWORDS):
-                reward += 0.1
+                reward += 0.2
         elif found_partial_match:
             # Already added 0.1, don't penalize as false positive
             pass

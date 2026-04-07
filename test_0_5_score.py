@@ -1,7 +1,7 @@
 import requests
 import time
 
-API_URL = "https://ashmit1812-scalarxmeta.hf.space"
+API_URL = "http://localhost:7860"
 
 def test_0_5_score():
     print(f"🌍 Connecting to {API_URL}...")

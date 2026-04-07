@@ -27,7 +27,7 @@ SYNTAX_REVIEW_TASKS = [
             }
         ],
         "ground_truth_bugs": [
-            {"type": "syntax", "file": "data.py", "keyword": "results=[]", "line": 13}
+            {"type": "syntax", "file": "data.py", "keyword": "mutable", "line": 10}
         ],
         "expected_action": "request_changes"
     },
