@@ -186,6 +186,63 @@ def _comment(file_name: str, severity: str, comment: str) -> Dict[str, str]:
     }
 
 
+def _file_review_hint(file_info: Dict[str, object]) -> Optional[Dict[str, str]]:
+    filename = str(file_info.get("filename", "unknown"))
+    patch = str(file_info.get("patch", "") or "")
+    lowered_patch = patch.lower()
+
+    hint_rules = [
+        (
+            "/admin.py" in filename or filename.endswith("admin.py"),
+            "info",
+            "Admin changes look structurally valid, but bulk actions, queryset scoping, and readonly field behavior should be checked in the Django admin UI.",
+        ),
+        (
+            "/api.py" in filename or "/views.py" in filename,
+            "info",
+            "API changes did not trigger a strong heuristic issue, but permission checks, serializer selection, and query filtering are worth validating in integration tests.",
+        ),
+        (
+            "/forms.py" in filename,
+            "info",
+            "Form updates look structurally consistent, but validation edge cases, cleaned_data assumptions, and cross-field constraints should be exercised explicitly.",
+        ),
+        (
+            "/serializers.py" in filename,
+            "info",
+            "Serializer changes look structurally safe, but field exposure, write-only handling, and nested update behavior should be reviewed carefully.",
+        ),
+        (
+            "/migrations/" in filename,
+            "info",
+            "Migration changes appear syntactically fine, but data backfill behavior, reversibility, and production rollout safety should be double-checked before deploy.",
+        ),
+        (
+            "/tests/" in filename or filename.startswith("tests/") or filename.endswith("_test.py") or filename.endswith("test_api.py"),
+            "info",
+            "Test updates were included, which is a good sign; verify the new assertions actually cover the changed behavior and not just the happy path.",
+        ),
+        (
+            "/models/" in filename or filename.endswith("models.py"),
+            "info",
+            "Model changes look structurally safe, but defaults, nullability, queryset assumptions, and admin or serializer integrations should be verified together.",
+        ),
+    ]
+
+    for matched, severity, message in hint_rules:
+        if matched:
+            return _comment(filename, severity, message)
+
+    if "permission_classes" in lowered_patch or "has_permission" in lowered_patch:
+        return _comment(
+            filename,
+            "info",
+            "Permission-related logic changed here, so authentication flow and unauthorized access cases should be rechecked with end-to-end requests.",
+        )
+
+    return None
+
+
 def _analyze_file_heuristically(file_info: Dict[str, object]) -> List[Dict[str, str]]:
     filename = str(file_info.get("filename", "unknown"))
     patch = str(file_info.get("patch", "") or "")
@@ -283,23 +340,14 @@ def _analyze_file_heuristically(file_info: Dict[str, object]) -> List[Dict[str, 
                 )
             )
 
-    if not findings:
-        if file_info.get("status") == "removed":
-            findings.append(
-                _comment(
-                    filename,
-                    "info",
-                    "This file was removed cleanly; please verify there are no remaining imports or callers depending on the deleted module.",
-                )
+    if not findings and file_info.get("status") == "removed":
+        findings.append(
+            _comment(
+                filename,
+                "info",
+                "This file was removed cleanly; please verify there are no remaining imports or callers depending on the deleted module.",
             )
-        elif filename.endswith((".py", ".js", ".ts", ".tsx", ".jsx")):
-            findings.append(
-                _comment(
-                    filename,
-                    "info",
-                    "No obvious structural bug was detected in this patch, but boundary cases, caller contracts, and regression coverage should still be reviewed.",
-                )
-            )
+        )
 
     return findings
 
@@ -317,6 +365,7 @@ def heuristic_review(pr_data: Dict[str, object]) -> Dict[str, object]:
 
     merge_conflicts_found = False
     warning_or_error_count = 0
+    info_hints: List[Dict[str, str]] = []
 
     for file_info in files:
         file_findings = _analyze_file_heuristically(file_info)
@@ -326,6 +375,13 @@ def heuristic_review(pr_data: Dict[str, object]) -> Dict[str, object]:
                 warning_or_error_count += 1
             if "merge conflict markers" in finding["comment"].lower():
                 merge_conflicts_found = True
+        if not file_findings:
+            hint = _file_review_hint(file_info)
+            if hint is not None:
+                info_hints.append(hint)
+
+    if warning_or_error_count == 0:
+        comments.extend(info_hints[:2])
 
     overall_verdict = "request_changes" if warning_or_error_count > 0 or merge_conflicts_found else "approve"
     if overall_verdict == "request_changes":
@@ -335,7 +391,7 @@ def heuristic_review(pr_data: Dict[str, object]) -> Dict[str, object]:
         )
     else:
         verdict_reason = (
-            "Heuristic review did not find a strong structural defect in the changed lines, so the PR looks mergeable pending normal human review."
+            "Heuristic review did not find a strong structural defect in the changed lines. The PR looks mergeable, with follow-up attention on normal framework-specific regression checks."
         )
 
     return {
