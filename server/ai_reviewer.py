@@ -243,6 +243,55 @@ def _file_review_hint(file_info: Dict[str, object]) -> Optional[Dict[str, str]]:
     return None
 
 
+def _cross_file_hints(files: List[Dict[str, object]]) -> List[Dict[str, str]]:
+    filenames = [str(file_info.get("filename", "")) for file_info in files]
+    lowered_names = [name.lower() for name in filenames]
+    all_patches = "\n".join(str(file_info.get("patch", "") or "") for file_info in files).lower()
+    hints: List[Dict[str, str]] = []
+
+    has_admin = any(name.endswith("admin.py") or "/admin.py" in name for name in lowered_names)
+    has_api = any("/api.py" in name or "/views.py" in name for name in lowered_names)
+    has_forms = any("/forms.py" in name for name in lowered_names)
+    has_serializer = any("/serializers.py" in name for name in lowered_names)
+    has_model = any("/models/" in name or name.endswith("models.py") for name in lowered_names)
+    has_migration = any("/migrations/" in name for name in lowered_names)
+    has_tests = any("/tests/" in name or name.startswith("tests/") or name.endswith("_test.py") or name.endswith("test_api.py") for name in lowered_names)
+
+    if (
+        ("logo" in all_patches or "image" in all_patches or "filefield" in all_patches or "imagefield" in all_patches)
+        and has_model
+        and has_migration
+        and (has_api or has_serializer or has_forms or has_admin)
+    ):
+        hints.append(
+            _comment(
+                "system",
+                "warning",
+                "This PR appears to thread a new image or file field through model, migration, and presentation layers, so null handling, storage configuration, and existing-record compatibility should be checked carefully.",
+            )
+        )
+
+    if has_api and has_serializer and not has_tests:
+        hints.append(
+            _comment(
+                "system",
+                "warning",
+                "API and serializer behavior changed without an obvious accompanying test file, so endpoint coverage and response shape regressions should be verified before merge.",
+            )
+        )
+
+    if has_tests and (has_api or has_forms or has_admin):
+        hints.append(
+            _comment(
+                "system",
+                "info",
+                "The PR includes tests alongside application-layer changes, which is a good sign; the key follow-up is verifying those tests cover permission, validation, and unhappy-path behavior as well.",
+            )
+        )
+
+    return hints
+
+
 def _analyze_file_heuristically(file_info: Dict[str, object]) -> List[Dict[str, str]]:
     filename = str(file_info.get("filename", "unknown"))
     patch = str(file_info.get("patch", "") or "")
@@ -366,6 +415,8 @@ def heuristic_review(pr_data: Dict[str, object]) -> Dict[str, object]:
     merge_conflicts_found = False
     warning_or_error_count = 0
     info_hints: List[Dict[str, str]] = []
+    comments.extend(_cross_file_hints(files)[:2])
+    warning_or_error_count += sum(1 for comment in comments if comment["severity"] in {"warning", "error"})
 
     for file_info in files:
         file_findings = _analyze_file_heuristically(file_info)
